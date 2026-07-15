@@ -1,322 +1,193 @@
 # QTI RAG Pipeline — Infrastructure Report
 
-**Date:** 2026-07-14
+**Date:** 2026-07-15 (Updated)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
 ---
 
-## 1. What Was Done Today
+## 1. What's Running on the Cluster
 
-### 1.1 Fixed CSI NFS Driver (k0s Compatibility)
+| Component | Status | Access |
+|---|---|---|
+| **Argo CD** | 7/7 pods Running | `http://<controller-ip>:30080` (admin / `8H2RJZIZPHhsaRts`) |
+| **Qdrant** | 1/1 Running | `qdrant.qdrant.svc.cluster.local:6333`, NFS-backed PVC (10Gi) |
+| **api-gateway** | 1/1 Running, Healthy | `api-gateway.qti.svc:8080` — returns `{"status":"ok","version":"0.1.0"}` |
+| **NFS CSI driver** | 3/3 controller, 2/2 node pods | k0s path: `/var/lib/k0s/kubelet` |
+| **Prometheus/Grafana** | All targets up, 29 dashboards | `http://<node-ip>:30000` (admin / `8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx`) |
 
-The NFS CSI node pods (`csi-nfs-node`) were stuck in `ContainerCreating` on both worker nodes.
+### 1.1 CI/CD Pipeline (Working End-to-End)
 
-**Root cause:** k0s stores kubelet data at `/var/lib/k0s/kubelet/`, not the standard `/var/lib/kubelet/`. The Helm chart defaulted to the standard path.
-
-**Fix:** Upgraded the Helm release with the correct path:
-```bash
-helm upgrade csi-driver-nfs csi-driver-nfs/csi-driver-nfs -n kube-system \
-  --set kubeletDir=/var/lib/k0s/kubelet \
-  --set controller.replicas=1
 ```
-
-**Takeaway:** Any Helm chart that mounts hostPath volumes from kubelet directories will fail on k0s. Always verify `kubeletDir` when deploying CSI drivers or similar system-level charts.
-
-### 1.2 Installed Argo CD
-
-- **Namespace:** `argocd`
-- **Access:** NodePort `30080` (HTTP) / `30081` (HTTPS)
-- **Insecure mode:** Enabled (`--insecure` flag) since no TLS cert is configured yet
-- **Initial password:** `8H2RJZIZPHhsaRts` (from `argocd-initial-admin-secret`)
-- **Auto-sync:** Enabled globally via `syncPolicy.automated`
-
-### 1.3 Deployed Qdrant
-
-- **Namespace:** `qdrant`
-- **Storage:** NFS-backed PVC via `nfs-csi` storage class (10Gi)
-- **Internal access only:** ClusterIP at `qdrant.qdrant.svc.cluster.local:6333`
-
-**Gotcha:** The Helm chart key is `persistence.storageClassName`, NOT `persistence.storageClass`. The wrong key silently renders an empty `storageClassName`, leaving the PVC unbound. If you reinstall Qdrant, always use:
-```bash
-helm install qdrant qdrant/qdrant -n qdrant \
-  --set persistence.storageClassName=nfs-csi \
-  --set persistence.size=10Gi
-```
-
-### 1.4 Created CI/CD Pipeline
-
-**Files added to `Merpatidove/QTI-MAGANG`:**
-
-| File | Purpose |
-|---|---|
-| `api-gateway/Dockerfile` | Multi-stage Rust build (rust:1.82 builder -> debian:bookworm-slim runtime) |
-| `api-gateway/k8s/deployment.yaml` | Deployment with liveness/readiness probes on `/v1/health` |
-| `api-gateway/k8s/service.yaml` | ClusterIP service on port 8080 |
-| `api-gateway/k8s/kustomization.yaml` | Image tag management (updated by CI) |
-| `.github/workflows/ci.yml` | Build, push to ghcr.io, commit updated tag back to repo |
-| `k8s/argocd/application.yaml` | Argo CD Application CRD |
-
-**Pipeline flow:**
-```
-Push to main (api-gateway/**) 
-  -> GitHub Actions builds Docker image 
-  -> Pushes to ghcr.io/merpatidove/qti-api-gateway:<sha>
+Push to main (api-gateway/**)
+  -> GitHub Actions builds Docker image (Rust multi-stage)
+  -> Pushes to ghcr.io/merpatidove/qti-api-gateway:<git-sha>
+  -> Docker smoke test: /v1/health must return 200
   -> Commits updated image tag to kustomization.yaml [skip ci]
   -> Argo CD auto-syncs to cluster
+  -> Pod restarts with new image, health check passes
 ```
 
-### 1.5 Generated SSH Deploy Key
+**Last successful run:** Run #3 (4794eb9) — image `ghcr.io/merpatidove/qti-api-gateway:4794eb9`, 32MB, deployed in ~8s.
 
-- **Type:** ed25519
-- **Public key:** Added as deploy key on GitHub (write access)
-- **Private key:** Stored as `DEPLOY_KEY` repository secret
-- **Used by:** GitHub Actions to push manifest updates back to the repo
+### 1.2 Files Created in QTI-MAGANG Repo
 
----
-
-## 2. Current Cluster State
-
-### 2.1 Nodes
-
-| Node | IP | CPU | RAM | Role |
-|---|---|---|---|---|
-| worker-1 | 10.20.20.202 | 4 cores | ~4GB | k0s worker |
-| worker-2 | 10.20.20.200 | 4 cores | ~4GB | k0s worker |
-
-### 2.2 Namespaces
-
-| Namespace | Workload |
-|---|---|
-| `kube-system` | NFS CSI driver, CoreDNS, k0s system pods |
-| `monitoring` | Prometheus + Grafana (kube-prometheus-stack) |
-| `argocd` | Argo CD (7 pods) |
-| `qdrant` | Qdrant vector database (StatefulSet) |
-| `qti` | api-gateway (Deployment + Service, currently ImagePullBackOff) |
-
-### 2.3 Resource Usage (at time of setup)
-
-| Node | CPU | RAM |
+| File | Purpose | Status |
 |---|---|---|
-| worker-1 | 2% | 19% |
-| worker-2 | 10% | 45% |
-
-**Plenty of headroom** for additional workloads.
+| `api-gateway/Dockerfile` | Multi-stage Rust build (rust:1-bookworm → debian:bookworm-slim) | Working |
+| `api-gateway/Cargo.toml` | Dependencies: axum 0.8, tokio, serde, reqwest (rustls-tls) | Working |
+| `api-gateway/src/main.rs` | Skeleton with `/v1/health` (GET) and `/v1/query` (POST) | Working |
+| `api-gateway/k8s/deployment.yaml` | Deployment with liveness/readiness on `/v1/health` | Working |
+| `api-gateway/k8s/service.yaml` | ClusterIP on port 8080 | Working |
+| `api-gateway/k8s/kustomization.yaml` | Image tag managed by CI (`newTag: <sha>`) | Working |
+| `.github/workflows/ci.yml` | Build → push → smoke test → commit-back | Working |
+| `k8s/argocd/application.yaml` | Argo CD Application CRD | Working |
 
 ---
 
-## 3. Architecture Overview
+## 2. SSH Deploy Keys
 
-```
-                    ┌─────────────────────────────────────────────┐
-                    │              GitHub (Merpatidove/QTI-MAGANG) │
-                    │                                             │
-                    │  api-gateway/    data-pipeline/   inference/ │
-                    └──────────┬──────────────────────────────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │   GitHub Actions     │
-                    │   (CI Pipeline)      │
-                    │   Build -> ghcr.io   │
-                    └──────────┬──────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │     Argo CD          │
-                    │   (Auto-sync)        │
-                    └──────────┬──────────┘
-                               │
-          ┌────────────────────┼────────────────────┐
-          │                    │                    │
-┌─────────▼────────┐ ┌────────▼───────┐  ┌─────────▼────────┐
-│   api-gateway     │ │    Qdrant      │  │  (Future: more)  │
-│   Axum/Rust       │ │  Vector DB     │  │                  │
-│   Port 8080       │ │  Port 6333     │  │                  │
-└───────────────────┘ └────────────────┘  └──────────────────┘
-          │
-          │  HTTP
-          │
-┌─────────▼────────┐
-│  Mac Mini         │
-│  Inference Server │
-│  Mistral-7B       │
-│  mistral.rs       │
-└──────────────────┘
-```
+Stored at `/home/ferdi/.ssh/` for persistence across reboots:
 
-### 3.1 Data Flow
-
-1. **Client** sends `POST /v1/query` to **api-gateway**
-2. **api-gateway** embeds the query and queries **Qdrant** for relevant chunks
-3. **api-gateway** forwards query + chunks to **Mac Mini inference server**
-4. **Mac Mini** runs Mistral-7B, returns structured JSON with answer + citations
-5. **api-gateway** aggregates and returns the response to the client
-
-### 3.2 Team Responsibilities
-
-| Team | Component | Runs On |
+| Key | Repo | Path |
 |---|---|---|
-| DevOps | api-gateway (Axum) | k0s cluster |
-| Data Engineering | data-pipeline (Python) | TBD (likely CronJob or standalone) |
-| Inference | mistral.rs server | Mac Mini (external) |
+| QTI-MAGANG deploy key | `Merpatidove/QTI-MAGANG` (write) | `~/.ssh/deploy_key_qti` |
+| Notes repo deploy key | `Merpatidove/Notes` (write) | `~/.ssh/notes_deploy_key` |
+
+SSH config (`~/.ssh/config`):
+```
+Host github.com-qti
+    HostName github.com
+    IdentityFile ~/.ssh/deploy_key_qti
+
+Host github.com-notes
+    HostName github.com
+    IdentityFile ~/.ssh/notes_deploy_key
+```
+
+Usage:
+```bash
+git clone git@github.com-qti:Merpatidove/QTI-MAGANG.git
+git clone git@github.com-notes:Merpatidove/Notes.git
+```
 
 ---
 
-## 4. What Needs to Be Done Next
+## 3. Notable Observations
 
-### 4.1 Immediate (Unblocks Development)
+### 3.1 k0s-Specific
+- **kubelet directory:** `/var/lib/k0s/kubelet/` (NOT `/var/lib/kubelet/`). Any Helm chart with `kubeletDir` must override it.
+- **Storage class:** `nfs-csi` is the only one. The Qdrant Helm chart key is `persistence.storageClassName`, NOT `persistence.storageClass`.
 
-- [ ] **Add actual Rust source code** to `api-gateway/` — the pipeline is ready, but there's no `Cargo.toml` or `src/main.rs` yet. The Docker build will fail until these exist.
-- [ ] **Create the `qti_knowledge_base` collection** in Qdrant:
+### 3.2 Security
+- **No firewall** on the controller VM — `iptables`, `ufw`, and `nftables` are all absent. NFS, k0s API, Docker Swarm ports are exposed.
+- **No SSH keys** for any user except `ferdi` (who has no `authorized_keys`). All SSH is password-based.
+- **9 sudo users**, only 2 actively used (ferdi, hapip).
+- **Argo CD is `--insecure`** — no TLS. Change the admin password from the default.
+- **Qdrant has no authentication**.
+- **This VM is a single point of failure** — k0s controller, NFS server, Docker host all run here. No HA.
+
+### 3.3 Ollama Was Removed
+Ollama was running on this controller VM, redundant with the Mac Mini inference server. Removed entirely:
+- Binary, service file, user, group, data directory all deleted.
+- `ferdi` removed from `ollama` group.
+
+### 3.4 No Firewall on the Controller
+The controller has all ports open (NFS, k0s API, Docker Swarm). Consider adding iptables/nftables for staging.
+
+### 3.5 Application Logging
+No centralized log aggregation (Loki, Fluentd). Logs live in systemd-journald on each node. To see full system logs:
+```bash
+sudo usermod -aG adm ferdi   # then re-login
+journalctl -u k0scontroller   # k0s control plane logs
+kubectl get events --all-namespaces  # cluster events
+```
+
+---
+
+## 4. What Needs to Be Done
+
+### 4.1 For the Dev Teams (Unblocks Real Functionality)
+
+- [ ] **Write Rust source code** — the skeleton is just a placeholder. Teams need to implement:
+  - `routes/query.rs` — POST /v1/query handler, Qdrant query, inference forward
+  - `routes/health.rs` — GET /v1/health
+  - `clients/qdrant.rs` — Qdrant HTTP client
+  - `clients/inference.rs` — Mac Mini inference client
+  - `models.rs` — matching `api_contract.md`
+- [ ] **Create `qti_knowledge_base` collection** in Qdrant:
   ```bash
   kubectl port-forward -n qdrant svc/qdrant 6333:6333
   curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
     -H 'Content-Type: application/json' \
-    -d '{
-      "vectors": {
-        "size": 1024,
-        "distance": "Cosine"
-      }
-    }'
+    -d '{"vectors": {"size": 1024, "distance": "Cosine"}}'
   ```
-- [ ] **Set up Argo CD authentication** — change the admin password, consider integrating with GitHub OAuth or a SSO provider.
+- [ ] **Set up the Mac Mini inference server** — the pipeline expects it at `INFERENCE_URL`. No server = `/v1/query` will error.
+- [ ] **Add secrets** — `QDRANT_URL`, `INFERENCE_URL`, and any API keys should be Kubernetes Secrets, not hardcoded in the Deployment.
 
-### 4.2 Short-Term (Before Production)
+### 4.2 Infrastructure Improvements
 
-- [ ] **TLS for Argo CD** — currently using `--insecure` mode. Either:
-  - Install an Ingress controller (nginx/traefik) with cert-manager, or
-  - Use a self-signed cert and configure SSL passthrough
-- [ ] **Secrets management** — the api-gateway needs env vars like `QDRANT_URL`, `INFERENCE_URL`, and potentially API keys. Consider:
-  - Sealed Secrets (gitops-friendly)
-  - External Secrets Operator (with a cloud vault)
-  - Or at minimum, a Kubernetes Secret that's not committed to git
-- [ ] **Resource limits review** — current limits are conservative (100m-500m CPU, 128Mi-512Mi RAM). Monitor actual usage and adjust.
-- [ ] **HorizontalPodAutoscaler** — once the api-gateway is serving traffic, add HPA for scaling.
+- [ ] **Smoke test scope** — currently only checks `/v1/health` after build. Once Qdrant/inference code lands, add:
+  - Query endpoint returns valid JSON matching the API contract
+  - Qdrant connectivity responds
+  - Response time under X seconds
+- [ ] **ServiceMonitor for api-gateway** — add Prometheus metrics endpoint to the Axum app and a `ServiceMonitor` CRD so Prometheus scrapes it.
+- [ ] **ServiceMonitor for Qdrant** — Qdrant exposes metrics at `/metrics` already. A simple `ServiceMonitor` would let you see Qdrant query latency, collection sizes, etc. in Grafana.
+- [ ] **AlertManager** — currently disabled. Once the stack is stable, enable it for Slack/email alerts on pod crashes, image pull failures, etc.
+- [ ] **Change Argo CD admin password** from the default.
+- [ ] **TLS for Argo CD** — install cert-manager or configure SSL passthrough.
+- [ ] **Ingress** — if the api-gateway needs external access, install nginx-ingress and create an `Ingress` resource.
+- [ ] **CI cleanup** — add a concurrency gate to the workflow so only the latest push builds (no wasted builds on outdated commits).
 
-### 4.3 Medium-Term
+### 4.3 Long-Term
 
-- [ ] **Data pipeline deployment** — the Python scraping/chunking/embedding pipeline could run as:
-  - A Kubernetes CronJob (for periodic ingestion)
-  - A standalone Deployment (for continuous processing)
-  - Needs its own Dockerfile + k8s manifests
-- [ ] **Monitoring for QTI workloads** — extend the existing Prometheus/Grafana stack:
-  - ServiceMonitor for api-gateway metrics
-  - Grafana dashboards for request latency, Qdrant query performance
-- [ ] **Ingress** — when you need external access to the api-gateway:
-  ```yaml
-  apiVersion: networking.k8s.io/v1
-  kind: Ingress
-  metadata:
-    name: api-gateway
-    namespace: qti
-    annotations:
-      nginx.ingress.kubernetes.io/rewrite-target: /
-  spec:
-    rules:
-    - host: api.qti.local
-      http:
-        paths:
-        - path: /
-          pathType: Prefix
-          backend:
-            service:
-              name: api-gateway
-              port:
-                number: 8080
-  ```
-
-### 4.4 Long-Term / Production
-
-- [ ] **Multi-environment** — if staging works well, replicate the pattern for production with:
-  - Separate Argo CD Application (or ApplicationSet)
-  - Separate k8s namespace or cluster
-  - Git branch or directory-based environment separation
-- [ ] **Backup strategy** for Qdrant (NFS snapshots or Qdrant's built-in snapshot feature)
-- [ ] **Network policies** — restrict which pods can talk to Qdrant and the api-gateway
+- [ ] **Multi-environment** — replicate for production (separate namespace or cluster, Git branch, ApplicationSet).
+- [ ] **Qdrant backup strategy** — NFS snapshots or Qdrant's built-in snapshot API.
+- [ ] **Network policies** — restrict pod-to-pod traffic (only api-gateway → Qdrant, api-gateway → inference).
+- [ ] **data-pipeline CI/CD** — the Python scraping pipeline needs its own Dockerfile, workflow, and deployment manifests (CronJob maybe).
+- [ ] **GPU node for inference** — if the Mac Mini becomes a bottleneck, consider adding a GPU worker node to the cluster.
 
 ---
 
-## 5. Best Practices & Notes
-
-### 5.1 k0s-Specific
-
-- **kubelet directory:** `/var/lib/k0s/kubelet/` (NOT `/var/lib/kubelet/`)
-- **Storage classes:** `nfs-csi` is the only one available. Any Helm chart that specifies a different `storageClassName` will leave PVCs unbound.
-- **Control plane:** Runs on a separate node (not one of the two workers). k0s manages its own containerd.
-
-### 5.2 GitOps / Argo CD
-
-- **Commit messages matter** — Argo CD uses them to display sync history. Use conventional commits (`feat:`, `chore:`, `fix:`).
-- **`[skip ci]` in manifest update commits** — prevents infinite CI loops when the pipeline commits back to the repo.
-- **Auto-sync + self-heal** — Argo CD will revert manual `kubectl edit` changes. This is by design.
-- **Argo CD Application** lives in `k8s/argocd/application.yaml` — a good pattern for GitOps-of-GitOps. You can also register it via the UI or CLI.
-
-### 5.3 CI/CD Pipeline
-
-- **Image tags use git SHA** (`ghcr.io/...:<sha>`) — deterministic, traceable, no `latest` ambiguity.
-- **Kustomize** is used for image tag management — `sed` updates the `newTag` field in `kustomization.yaml`.
-- **GitHub Actions cache** is enabled (`cache-from/to: type=gha`) — Rust builds are slow, this significantly speeds up rebuilds.
-- **`GITHUB_TOKEN`** is used for ghcr.io login (automatic, no extra secret needed). The **deploy key** is only for pushing manifest commits.
-
-### 5.4 Security Observations
-
-- The deploy key has write access to the repo — this is necessary for the pipeline but means a leaked key can push code. Keep the private key secure in GitHub Secrets.
-- Argo CD admin password is static — change it after initial setup.
-- Qdrant has no authentication enabled by default. For staging it's fine, but for production enable API key auth.
-- The api-gateway connects to Qdrant over plain HTTP (cluster-internal). This is acceptable within the cluster but consider mTLS for production.
-
-### 5.5 Peculiar / Interesting Observations
-
-1. **k0s vs standard Kubernetes paths** — this is the #1 gotcha. Every Helm chart that touches kubelet directories needs `kubeletDir` overridden. This includes CSI drivers, device plugins, and monitoring agents.
-
-2. **Mac Mini as an inference server** — unusual but practical. The Mistral-7B model benefits from Apple Silicon's unified memory architecture. The trade-off is that it's a single point of failure outside the cluster. Consider:
-   - Health check from api-gateway with circuit breaker pattern
-   - Fallback behavior when inference is unreachable
-   - Whether a GPU-equipped worker node would be more reliable
-
-3. **The repo is multi-team from day one** — `inference/`, `api-gateway/`, `data-pipeline/` with clear ownership. This is good but means the CI pipeline needs to be extended per-component. The current pipeline only handles `api-gateway/`. When `data-pipeline/` gets a Dockerfile, it'll need its own workflow or a matrix build.
-
-4. **NFS as the only storage class** — works well for shared data but has latency implications for Qdrant's random I/O. Monitor query performance. If it becomes a bottleneck, consider local SSD storage for Qdrant on a specific node.
-
-5. **Only 6 commits in the repo** — the project is very early stage. The infrastructure is set up ahead of the code, which is the right order. When the dev team starts pushing, the pipeline will just work.
-
----
-
-## 6. Quick Reference
-
-### Access
-
-| Service | URL | Credentials |
-|---|---|---|
-| Argo CD UI | `http://<controller-ip>:30080` | admin / `8H2RJZIZPHhsaRts` |
-| Grafana | `http://<any-node>:30000` | (check via `kubectl -n monitoring`) |
-| Qdrant Dashboard | Port-forward: `kubectl port-forward -n qdrant svc/qdrant 6333:6333` | No auth |
-
-### Useful Commands
+## 5. Quick Reference
 
 ```bash
-# Check Argo CD app status
+# Check CI pipeline status
+# https://github.com/Merpatidove/QTI-MAGANG/actions
+
+# Check Argo CD app
 kubectl -n argocd get application qti-api-gateway
 
-# Check all QTI workloads
-kubectl -n qti get all
+# Force Argo CD resync
+kubectl -n argocd patch application qti-api-gateway \
+  -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' \
+  --type=merge
 
-# View Argo CD logs
-kubectl -n argocd logs deployment/argocd-server
+# Test api-gateway
+kubectl -n qti run test --rm -i --restart=Never --image=curlimages/curl \
+  -- curl -s http://api-gateway.qti.svc:8080/v1/health
 
-# Force Argo CD sync
-kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' --type=merge
-
-# Check Qdrant health
+# Qdrant health
 kubectl -n qdrant exec qdrant-0 -- curl -s http://localhost:6333/healthz
 
-# Redeploy api-gateway
-kubectl -n qti rollout restart deployment/api-gateway
+# Grafana
+# http://<node-ip>:30000 | admin / 8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx
+
+# Create Qdrant collection
+curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
+  -H 'Content-Type: application/json' \
+  -d '{"vectors": {"size": 1024, "distance": "Cosine"}}'
 ```
 
-### File Locations on This VM
+### Deploy Key Recovery (if /tmp is wiped)
 
-| File | Path |
-|---|---|
-| Deploy key (private) | `/tmp/deploy_key` |
-| Deploy key (public) | `/tmp/deploy_key.pub` |
-| Cloned repo | `/tmp/QTI-MAGANG` |
+```bash
+# Keys are stored at:
+ls -la ~/.ssh/deploy_key_qti ~/.ssh/notes_deploy_key
+
+# Or regenerate and add to GitHub:
+ssh-keygen -t ed25519 -C "vm-notes" -f ~/.ssh/notes_deploy_key -N ""
+ssh-keygen -t ed25519 -C "github-actions-qti" -f ~/.ssh/deploy_key_qti -N ""
+```
+
+The private keys are also stored in GitHub Secrets (`DEPLOY_KEY` for QTI-MAGANG) — if this VM is ever rebuilt, you can pull them from there.
