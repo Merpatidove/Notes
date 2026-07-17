@@ -1,6 +1,6 @@
 # QTI RAG Pipeline — Infrastructure Report
 
-**Date:** 2026-07-17 (Updated)
+**Date:** 2026-07-17 (Updated twice — monitoring stack + registry fix)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -15,6 +15,10 @@
 | **api-gateway** | 1/1 Running, Healthy | `api-gateway.qti.svc:8080` — returns `{"status":"ok","version":"0.1.0"}` |
 | **NFS CSI driver** | 3/3 controller, 2/2 node pods | k0s path: `/var/lib/k0s/kubelet` |
 | **Prometheus/Grafana** | All targets up, 29 dashboards | `http://<node-ip>:30000` (admin / `8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx`) |
+| **Loki** | 1/1 Running (StatefulSet) | `loki.monitoring.svc:3100` — log aggregation backend |
+| **Promtail** | 2/2 Running (DaemonSet, both nodes) | Ship logs from all nodes to Loki |
+| **Jaeger** | 1/1 Running (in-memory storage) | OTLP gRPC `:4317`, OTLP HTTP `:4318`, UI `:16686` |
+| **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
 
 ### 1.1 CI/CD Pipeline (Working End-to-End)
 
@@ -116,12 +120,75 @@ Ollama was running on this controller VM, redundant with the Mac Mini inference 
 ### 3.4 No Firewall on the Controller
 The controller has all ports open (NFS, k0s API, Docker Swarm). Consider adding iptables/nftables for staging.
 
-### 3.5 Application Logging
-No centralized log aggregation (Loki, Fluentd). Logs live in systemd-journald on each node. To see full system logs:
+### 3.5 Application Logging (Now Deployed)
+
+Centralized log aggregation is now running via **Loki + Promtail**:
+- **Loki** deployed as a StatefulSet in `monitoring` namespace (NFS-backed PVC)
+- **Promtail** deployed as a DaemonSet on both worker nodes — ships all container/system logs to Loki
+- **Loki endpoint:** `http://loki.monitoring.svc:3100/loki/api/v1/push`
+- **Grafana integration:** Add Loki as a data source in Grafana (`http://loki.monitoring.svc:3100`)
+
+To query logs via Grafana UI:
+```
+1. Open Grafana at http://<node-ip>:30000
+2. Go to Explore → select "Loki" data source
+3. Query: {namespace="monitoring"} or {job="varlogs"}
+```
+
+To query logs via CLI:
 ```bash
-sudo usermod -aG adm ferdi   # then re-login
-journalctl -u k0scontroller   # k0s control plane logs
-kubectl get events --all-namespaces  # cluster events
+curl -G http://localhost:3100/loki/api/v1/query_range \
+  --data-urlencode 'query={namespace="monitoring"}' \
+  --data-urlencode 'limit=10'
+```
+
+---
+
+## 3.6 Local Docker Registry
+
+A local HTTPS Docker registry is running on the controller for storing deployment images:
+- **Address:** `10.20.20.201:5000` (HTTPS, self-signed cert for IP 10.20.20.201)
+- **Cert files:** `/tmp/certs/registry.crt`, `/tmp/certs/registry.key`
+- **Docker trust cert:** `/etc/docker/certs.d/10.20.20.201:5000/ca.crt`
+- **Containerd trust:** Workers configured via `/etc/k0s/containerd/certs.d/10.20.20.201:5000/hosts.toml` and `/etc/k0s/containerd.d/registry-certs.toml`
+
+**Currently stored images:**
+| Image | Tag |
+|---|---|
+| `grafana/loki` | `2.9.3` |
+| `grafana/promtail` | `3.5.1` |
+| `jaegertracing/jaeger` | `2.19.0` |
+| `busybox` | `1.36` |
+
+**Pushing new images:**
+```bash
+docker tag <image> 10.20.20.201:5000/<image>:<tag>
+docker push 10.20.20.201:5000/<image>:<tag>
+```
+
+**Note:** Worker nodes have DNS UDP (port 53) blocked — they cannot resolve external registries (Docker Hub, etc.). All images must come from the local registry or be pre-loaded.
+
+---
+
+## 3.7 Monitoring Stack — What Was Done (2026-07-17)
+
+1. **Set up local Docker registry** at `10.20.20.201:5000` with HTTPS self-signed cert
+2. **Pushed all deployment images** to the local registry (Loki, Promtail, Jaeger, busybox)
+3. **Fixed containerd trust on workers:**
+   - Worker nodes couldn't pull from local HTTPS registry (`x509: certificate signed by unknown authority`)
+   - k0s `containerd.configOverride` does not propagate to workers in v1.36
+   - Deployed a privileged DaemonSet using cached NFS plugin image (`registry.k8s.io/sig-storage/nfsplugin:v4.13.4`) to nsenter into host and:
+     - Installed CA cert into system trust store
+     - Created `/etc/k0s/containerd/certs.d/10.20.20.201:5000/hosts.toml` with CA reference
+     - Created `/etc/k0s/containerd.d/registry-certs.toml` to set `config_path` for CRI plugin
+     - Restarted containerd on both workers
+4. **Verified Loki + Promtail** working (was already deployed via `loki-stack` Helm chart)
+5. **Deployed Jaeger v2.19.0** with in-memory storage, OTLP receivers (gRPC:4317, HTTP:4318)
+
+### Jaeger access:
+```bash
+kubectl port-forward -n monitoring svc/jaeger-query 16686:16686
+# Visit http://127.0.0.1:16686/
 ```
 
 ---
@@ -161,6 +228,12 @@ kubectl get events --all-namespaces  # cluster events
 - [ ] **TLS for Argo CD** — install cert-manager or configure SSL passthrough.
 - [ ] **Ingress** — if the api-gateway needs external access, install nginx-ingress and create an `Ingress` resource.
 - [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
+- [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Add Loki data source in Grafana.
+- [ ] **Jaeger persistent storage** — Jaeger is currently using in-memory storage (data lost on restart). Switch to Elasticsearch or Cassandra for production.
+- [ ] **Jaeger in Argo CD** — deploy Jaeger via Argo CD Application for GitOps-managed lifecycle.
+- [ ] **Loki in Argo CD** — same as above, manage Loki stack via Argo CD.
+- [ ] **Grafana Loki data source** — add Loki as a built-in data source in Grafana provisioning so logs are immediately queryable.
+- [ ] **Jaeger ServiceMonitor** — expose Jaeger metrics to Prometheus for trace pipeline monitoring.
 
 ### 4.3 Long-Term
 
@@ -200,6 +273,22 @@ kubectl -n qdrant exec qdrant-0 -- curl -s http://localhost:6333/healthz
 curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
   -H 'Content-Type: application/json' \
   -d '{"vectors": {"size": 1024, "distance": "Cosine"}}'
+
+# Jaeger UI
+kubectl port-forward -n monitoring svc/jaeger-query 16686:16686
+
+# Loki log query (via port-forward)
+kubectl port-forward -n monitoring svc/loki 3100:3100 &
+curl -G http://localhost:3100/loki/api/v1/query_range \
+  --data-urlencode 'query={namespace="monitoring"}' \
+  --data-urlencode 'limit=10'
+
+# Push image to local registry
+docker tag <image>:<tag> 10.20.20.201:5000/<image>:<tag>
+docker push 10.20.20.201:5000/<image>:<tag>
+
+# All pods in monitoring namespace
+kubectl get pods -n monitoring -o wide
 ```
 
 ### Deploy Key Recovery (if /tmp is wiped)
