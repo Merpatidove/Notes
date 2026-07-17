@@ -1,6 +1,6 @@
 # QTI RAG Pipeline — Infrastructure Report
 
-**Date:** 2026-07-15 (Updated)
+**Date:** 2026-07-17 (Updated)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -28,20 +28,41 @@ Push to main (api-gateway/**)
   -> Pod restarts with new image, health check passes
 ```
 
-**Last successful run:** Run #3 (4794eb9) — image `ghcr.io/merpatidove/qti-api-gateway:4794eb9`, 32MB, deployed in ~8s.
+- **Concurrency gate:** enabled — only the latest push builds (old in-progress runs are cancelled).
+- **Rollback:** manual via `rollback.yml` — specify a previous image SHA/tag to revert instantly.
+
+**Last successful run:** Image `ghcr.io/merpatidove/qti-api-gateway:e40ba85`, 32MB, deployed in ~8s.
 
 ### 1.2 Files Created in QTI-MAGANG Repo
 
 | File | Purpose | Status |
 |---|---|---|
 | `api-gateway/Dockerfile` | Multi-stage Rust build (rust:1-bookworm → debian:bookworm-slim) | Working |
-| `api-gateway/Cargo.toml` | Dependencies: axum 0.8, tokio, serde, reqwest (rustls-tls) | Working |
-| `api-gateway/src/main.rs` | Skeleton with `/v1/health` (GET) and `/v1/query` (POST) | Working |
+| `api-gateway/Cargo.toml` | Dependencies: axum 0.8, tokio, serde, reqwest (rustls-tls), prometheus | Working |
+| `api-gateway/src/main.rs` | `/v1/health`, `/v1/query`, `/metrics` endpoints with Prometheus counters | Working |
 | `api-gateway/k8s/deployment.yaml` | Deployment with liveness/readiness on `/v1/health` | Working |
 | `api-gateway/k8s/service.yaml` | ClusterIP on port 8080 | Working |
 | `api-gateway/k8s/kustomization.yaml` | Image tag managed by CI (`newTag: <sha>`) | Working |
-| `.github/workflows/ci.yml` | Build → push → smoke test → commit-back | Working |
+| `api-gateway/k8s/servicemonitor.yaml` | Prometheus ServiceMonitor, scrapes `/metrics` every 15s | Working |
+| `.github/workflows/ci.yml` | Build → push → smoke test → commit-back (with concurrency gate) | Working |
+| `.github/workflows/rollback.yml` | Manual rollback to any previous image tag/SHA | Working |
+| `rag-service/Cargo.toml` | RAG inference service (axum 0.7, tokio, serde) | Scaffold |
+| `rag-service/src/main.rs` | Axum server on port 3000, `POST /api/v1/ticket` | Scaffold |
+| `rag-service/src/models.rs` | `TicketRequest`, `InferenceResponse` structs | Scaffold |
+| `rag-service/src/routes.rs` | Ticket handler (placeholder, logs ticket ID) | Scaffold |
 | `k8s/argocd/application.yaml` | Argo CD Application CRD | Working |
+
+### 1.3 rag-service (New Component)
+
+A separate Rust/Axum service (`rag-service/`) has been scaffolded as the RAG inference engine:
+
+- **Package name:** `inference-engine` (v0.1.0)
+- **Endpoint:** `POST /api/v1/ticket` on port 3000
+- **Models:** `TicketRequest` (ticket_id, raw_text, project_tags), `InferenceResponse` (status, message)
+- **Status:** Placeholder only — accepts JSON, logs ticket ID, returns dummy response. No Qdrant or Mistral integration yet.
+- **Not deployed** — no K8s manifests or CI pipeline for this service yet.
+
+> **Note:** The `rag-service/target/` directory (compiled Rust artifacts) is committed to the repo. A `.gitignore` should be added.
 
 ---
 
@@ -109,9 +130,10 @@ kubectl get events --all-namespaces  # cluster events
 
 ### 4.1 For the Dev Teams (Unblocks Real Functionality)
 
-- [ ] **Write Rust source code** — the skeleton is just a placeholder. Teams need to implement:
+- [x] **api-gateway skeleton** — `/v1/health`, `/v1/query`, `/metrics` endpoints implemented. Query is placeholder only.
+- [x] **rag-service scaffold** — `POST /api/v1/ticket` accepts JSON, returns dummy response. No Qdrant/Mistral integration.
+- [ ] **Write actual Rust source code** — teams need to implement:
   - `routes/query.rs` — POST /v1/query handler, Qdrant query, inference forward
-  - `routes/health.rs` — GET /v1/health
   - `clients/qdrant.rs` — Qdrant HTTP client
   - `clients/inference.rs` — Mac Mini inference client
   - `models.rs` — matching `api_contract.md`
@@ -124,6 +146,7 @@ kubectl get events --all-namespaces  # cluster events
   ```
 - [ ] **Set up the Mac Mini inference server** — the pipeline expects it at `INFERENCE_URL`. No server = `/v1/query` will error.
 - [ ] **Add secrets** — `QDRANT_URL`, `INFERENCE_URL`, and any API keys should be Kubernetes Secrets, not hardcoded in the Deployment.
+- [ ] **Add `.gitignore`** — `rag-service/target/` build artifacts are committed to the repo. Need to exclude `target/`, `*.pdb`, etc.
 
 ### 4.2 Infrastructure Improvements
 
@@ -131,13 +154,13 @@ kubectl get events --all-namespaces  # cluster events
   - Query endpoint returns valid JSON matching the API contract
   - Qdrant connectivity responds
   - Response time under X seconds
-- [ ] **ServiceMonitor for api-gateway** — add Prometheus metrics endpoint to the Axum app and a `ServiceMonitor` CRD so Prometheus scrapes it.
+- [x] **ServiceMonitor for api-gateway** — done. Prometheus scrapes `/metrics` every 15s via `servicemonitor.yaml`.
 - [ ] **ServiceMonitor for Qdrant** — Qdrant exposes metrics at `/metrics` already. A simple `ServiceMonitor` would let you see Qdrant query latency, collection sizes, etc. in Grafana.
 - [ ] **AlertManager** — currently disabled. Once the stack is stable, enable it for Slack/email alerts on pod crashes, image pull failures, etc.
 - [ ] **Change Argo CD admin password** from the default.
 - [ ] **TLS for Argo CD** — install cert-manager or configure SSL passthrough.
 - [ ] **Ingress** — if the api-gateway needs external access, install nginx-ingress and create an `Ingress` resource.
-- [ ] **CI cleanup** — add a concurrency gate to the workflow so only the latest push builds (no wasted builds on outdated commits).
+- [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
 
 ### 4.3 Long-Term
 
