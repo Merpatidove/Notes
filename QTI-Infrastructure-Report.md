@@ -1,6 +1,6 @@
 # QTI RAG Pipeline — Infrastructure Report
 
-**Date:** 2026-07-17 (Updated twice — monitoring stack + registry fix)
+**Date:** 2026-07-17 (Updated 2026-07-23 — AlertManager, Ingress, custom alerts)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -18,7 +18,10 @@
 | **Loki** | 1/1 Running (StatefulSet) | `loki.monitoring.svc:3100` — log aggregation backend |
 | **Promtail** | 2/2 Running (DaemonSet, both nodes) | Ship logs from all nodes to Loki |
 | **Jaeger** | 1/1 Running (in-memory storage) | OTLP gRPC `:4317`, OTLP HTTP `:4318`, UI `:16686` |
+| **AlertManager** | 2/2 Running (StatefulSet) | `prometheus-kube-prometheus-alertmanager.monitoring:9093` — Telegram notifications active |
+| **Ingress-NGINX** | 1/1 Running (LoadBalancer) | NodePort 31084 (HTTP), 30616 (HTTPS) — routes to Grafana, Prometheus, AlertManager |
 | **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
+| **hite-prod Registry** | 1/1 Running (Deployment) | `private-registry-svc.hite-prod:5000` (NodePort 32000) — Kubernetes-native registry:2 |
 
 ### 1.1 CI/CD Pipeline (Working End-to-End)
 
@@ -111,6 +114,7 @@ git clone git@github.com-notes:Merpatidove/Notes.git
 - **Argo CD is `--insecure`** — no TLS. Change the admin password from the default.
 - **Qdrant has no authentication**.
 - **This VM is a single point of failure** — k0s controller, NFS server, Docker host all run here. No HA.
+- **Telegram bot token in plaintext** — stored in AlertManager Secret and Helm values. Rotate if the token is reused elsewhere.
 
 ### 3.3 Ollama Was Removed
 Ollama was running on this controller VM, redundant with the Mac Mini inference server. Removed entirely:
@@ -126,7 +130,7 @@ Centralized log aggregation is now running via **Loki + Promtail**:
 - **Loki** deployed as a StatefulSet in `monitoring` namespace (NFS-backed PVC)
 - **Promtail** deployed as a DaemonSet on both worker nodes — ships all container/system logs to Loki
 - **Loki endpoint:** `http://loki.monitoring.svc:3100/loki/api/v1/push`
-- **Grafana integration:** Add Loki as a data source in Grafana (`http://loki.monitoring.svc:3100`)
+- **Grafana integration:** Loki already provisioned as a data source via `loki-loki-stack` ConfigMap (label `grafana_datasource: "1"`). Jaeger and Alertmanager data sources also pre-configured in `prometheus-kube-prometheus-grafana-datasource`.
 
 To query logs via Grafana UI:
 ```
@@ -191,6 +195,60 @@ kubectl port-forward -n monitoring svc/jaeger-query 16686:16686
 # Visit http://127.0.0.1:16686/
 ```
 
+### 3.8 AlertManager + Telegram Notifications (Deployed 2026-07-22)
+
+AlertManager is deployed as a StatefulSet in `monitoring` namespace, pulling its image from the local registry (`10.20.20.201:5000/prometheus/alertmanager:v0.33.1`).
+
+**Telegram receivers configured:**
+
+| Receiver | Chat ID | Purpose |
+|---|---|---|
+| `telegram-notif` | `6983435580` | Default — all alerts |
+| `telegram-team-group` | `-1004300626827` | `HITE_Log*` alerts only |
+
+**Routing:** 30s group_wait, 5m group_interval, 3h repeat_interval. `Watchdog` alert suppressed (sent to null receiver).
+
+**Custom PrometheusRule `hite-infra-alerts`** (created 2026-07-22):
+
+| Alert | Severity | Trigger |
+|---|---|---|
+| `HITE_NodeCPUHigh` | warning | CPU > 90% for 5m |
+| `HITE_NodeMemoryHigh` | warning | Memory > 85% for 5m |
+| `HITE_NodeDiskHigh` | critical | Disk > 90% for 5m |
+| `HITE_PodCrashLooping` | critical | CrashLoopBackOff for 2m |
+| `HITE_NodeDown` | critical | node-exporter unreachable 2m |
+| `HITE_QdrantDown` | critical | Qdrant unreachable 2m |
+
+Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5 menit").
+
+> **Security note:** The Telegram bot token is stored in plaintext in the AlertManager Secret and Helm values. Consider rotating if this token is used elsewhere.
+
+### 3.9 Ingress-NGINX (Deployed 2026-07-16)
+
+nginx ingress controller running as a LoadBalancer in `ingress-nginx` namespace (NodePort 31084/30616).
+
+**Ingress resources:**
+
+| Ingress | Host | Backend | Created |
+|---|---|---|---|
+| `grafana-ingress` | `grafana.hite.local` | `prometheus-grafana:80` | 2026-07-16 |
+| `prometheus-ingress` | `prometheus.hite.local` | `prometheus-kube-prometheus-prometheus:9090` | 2026-07-22 |
+| `alertmanager-ingress` | `alertmanager.hite.local` | `prometheus-kube-prometheus-alertmanager:9093` | 2026-07-22 |
+
+All ingress rules use `ingressClassName: nginx` and `pathType: Prefix`. No TLS configured yet — HTTP only. Hostnames are `.hite.local` (requires /etc/hosts or internal DNS).
+
+### 3.10 hite-prod Namespace + Private Registry (Deployed 2026-07-16)
+
+A `hite-prod` namespace runs a Kubernetes-native Docker registry (official `registry:2` image) as a Deployment with a NodePort Service on `32000`.
+
+| Resource | Details |
+|---|---|
+| Namespace | `hite-prod` |
+| Deployment | `private-registry` — 1 replica, `registry:2` |
+| Service | `private-registry-svc` — NodePort 5000:32000 |
+
+This is separate from the host-level Docker registry at `10.20.20.201:5000`. Two registries now exist on the cluster.
+
 ---
 
 ## 4. What Needs to Be Done
@@ -223,16 +281,16 @@ kubectl port-forward -n monitoring svc/jaeger-query 16686:16686
   - Response time under X seconds
 - [x] **ServiceMonitor for api-gateway** — done. Prometheus scrapes `/metrics` every 15s via `servicemonitor.yaml`.
 - [ ] **ServiceMonitor for Qdrant** — Qdrant exposes metrics at `/metrics` already. A simple `ServiceMonitor` would let you see Qdrant query latency, collection sizes, etc. in Grafana.
-- [ ] **AlertManager** — currently disabled. Once the stack is stable, enable it for Slack/email alerts on pod crashes, image pull failures, etc.
+- [x] **AlertManager** — deployed with Telegram notifications (2 receivers). Custom alerts in `hite-infra-alerts` PrometheusRule. See §3.8.
 - [ ] **Change Argo CD admin password** from the default.
 - [ ] **TLS for Argo CD** — install cert-manager or configure SSL passthrough.
-- [ ] **Ingress** — if the api-gateway needs external access, install nginx-ingress and create an `Ingress` resource.
+- [x] **Ingress** — nginx-ingress deployed, Ingress resources for Grafana, Prometheus, AlertManager on `.hite.local` hosts. See §3.9.
 - [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
-- [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Add Loki data source in Grafana.
+- [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Loki data source already provisioned in Grafana via ConfigMap.
 - [ ] **Jaeger persistent storage** — Jaeger is currently using in-memory storage (data lost on restart). Switch to Elasticsearch or Cassandra for production.
 - [ ] **Jaeger in Argo CD** — deploy Jaeger via Argo CD Application for GitOps-managed lifecycle.
 - [ ] **Loki in Argo CD** — same as above, manage Loki stack via Argo CD.
-- [ ] **Grafana Loki data source** — add Loki as a built-in data source in Grafana provisioning so logs are immediately queryable.
+- [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Jaeger and Alertmanager data sources also configured.
 - [ ] **Jaeger ServiceMonitor** — expose Jaeger metrics to Prometheus for trace pipeline monitoring.
 
 ### 4.3 Long-Term
@@ -289,6 +347,22 @@ docker push 10.20.20.201:5000/<image>:<tag>
 
 # All pods in monitoring namespace
 kubectl get pods -n monitoring -o wide
+
+# AlertManager — check status
+kubectl get pods -n monitoring -l app.kubernetes.io/name=alertmanager
+
+# AlertManager — view config
+kubectl get secret -n monitoring alertmanager-prometheus-kube-prometheus-alertmanager \
+  -o jsonpath='{.data.alertmanager\.yaml}' | base64 -d
+
+# Ingress — list all
+kubectl get ingress --all-namespaces
+
+# hite-prod registry — test
+curl -k https://<node-ip>:32000/v2/_catalog
+
+# Custom alerts — verify loaded
+kubectl get prometheusrule hite-infra-alerts -n monitoring
 ```
 
 ### Deploy Key Recovery (if /tmp is wiped)
