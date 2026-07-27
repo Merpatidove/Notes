@@ -1,6 +1,6 @@
 # QTI RAG Pipeline — Infrastructure Report
 
-**Date:** 2026-07-17 (Updated 2026-07-27 — Jaeger Badger storage, ServiceMonitors, Argo CD Apps)
+**Date:** 2026-07-17 (Updated 2026-07-27 — Jaeger Badger storage, ServiceMonitors, Argo CD full ownership)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -190,6 +190,7 @@ docker push 10.20.20.201:5000/<image>:<tag>
 5. **Deployed Jaeger v2.19.0** with in-memory storage, OTLP receivers (gRPC:4317, HTTP:4318)
 6. **Migrated Jaeger to Badger persistent storage** (2026-07-27) — NFS-backed PVC (`jaeger-badger-data`, 5Gi). Data survives pod restarts. TTL set to 720h (30 days).
 7. **Deployed Jaeger ServiceMonitor** — scrapes `internal-metrics:8888/metrics` every 30s
+8. **Argo CD now fully owns Jaeger and Loki** — old Helm releases uninstalled. Both Applications are `Synced` / `Healthy`.
 
 ### Jaeger access:
 ```bash
@@ -253,9 +254,7 @@ This is separate from the host-level Docker registry at `10.20.20.201:5000`. Two
 
 ### 3.11 Argo CD Repo-Server Connectivity Issue
 
-The Argo CD repo-server (`10.109.94.133:8081`) is not reachable from the application controller via ClusterIP. This is a kube-router networking issue between nodes. The repo-server pod is running and healthy (verified via port-forward), but cross-node ClusterIP routing fails for this service. As a result, newly created Argo CD Applications (Jaeger, Loki) remain in `Unknown` sync status until this is resolved.
-
-**Workaround:** Restart the repo-server deployment or investigate kube-router network policies.
+The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable from the application controller via ClusterIP. This was a kube-router networking issue between nodes. The repo-server pod was always healthy (verified via port-forward). After a repo-server restart, the issue resolved — both Jaeger and Loki Applications are now `Synced` / `Healthy`.
 
 ---
 
@@ -296,8 +295,8 @@ The Argo CD repo-server (`10.109.94.133:8081`) is not reachable from the applica
 - [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
 - [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Loki data source already provisioned in Grafana via ConfigMap.
 - [x] **Jaeger persistent storage** — migrated to Badger with 5Gi NFS PVC (`jaeger-badger-data`). TTL 720h. Data survives restarts.
-- [x] **Jaeger in Argo CD** — Application created (`k8s/jaeger/application.yaml`). Pending sync (repo-server connectivity issue).
-- [x] **Loki in Argo CD** — Application created (`k8s/loki/application.yaml`). Pending sync (repo-server connectivity issue).
+- [x] **Jaeger in Argo CD** — Application created (`k8s/jaeger/application.yaml`). Synced/Healthy. Old Helm release uninstalled.
+- [x] **Loki in Argo CD** — Application created (`k8s/loki/application.yaml`). Synced/Healthy. Old Helm release uninstalled.
 - [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Jaeger and Alertmanager data sources also configured.
 - [x] **Jaeger ServiceMonitor** — done. Scrapes `internal-metrics:8888/metrics` every 30s. Target visible in Prometheus.
 
