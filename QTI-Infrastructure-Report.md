@@ -1,6 +1,6 @@
 # QTI RAG Pipeline — Infrastructure Report
 
-**Date:** 2026-07-17 (Updated 2026-07-23 — AlertManager, Ingress, custom alerts)
+**Date:** 2026-07-17 (Updated 2026-07-27 — Jaeger Badger storage, ServiceMonitors, Argo CD Apps)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -17,7 +17,7 @@
 | **Prometheus/Grafana** | All targets up, 29 dashboards | `http://<node-ip>:30000` (admin / `8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx`) |
 | **Loki** | 1/1 Running (StatefulSet) | `loki.monitoring.svc:3100` — log aggregation backend |
 | **Promtail** | 2/2 Running (DaemonSet, both nodes) | Ship logs from all nodes to Loki |
-| **Jaeger** | 1/1 Running (in-memory storage) | OTLP gRPC `:4317`, OTLP HTTP `:4318`, UI `:16686` |
+| **Jaeger** | 1/1 Running (Badger persistent storage, 5Gi NFS PVC) | OTLP gRPC `:4317`, OTLP HTTP `:4318`, UI `:16686`, metrics `:8888` |
 | **AlertManager** | 2/2 Running (StatefulSet) | `prometheus-kube-prometheus-alertmanager.monitoring:9093` — Telegram notifications active |
 | **Ingress-NGINX** | 1/1 Running (LoadBalancer) | NodePort 31084 (HTTP), 30616 (HTTPS) — routes to Grafana, Prometheus, AlertManager |
 | **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
@@ -188,6 +188,8 @@ docker push 10.20.20.201:5000/<image>:<tag>
      - Restarted containerd on both workers
 4. **Verified Loki + Promtail** working (was already deployed via `loki-stack` Helm chart)
 5. **Deployed Jaeger v2.19.0** with in-memory storage, OTLP receivers (gRPC:4317, HTTP:4318)
+6. **Migrated Jaeger to Badger persistent storage** (2026-07-27) — NFS-backed PVC (`jaeger-badger-data`, 5Gi). Data survives pod restarts. TTL set to 720h (30 days).
+7. **Deployed Jaeger ServiceMonitor** — scrapes `internal-metrics:8888/metrics` every 30s
 
 ### Jaeger access:
 ```bash
@@ -249,6 +251,12 @@ A `hite-prod` namespace runs a Kubernetes-native Docker registry (official `regi
 
 This is separate from the host-level Docker registry at `10.20.20.201:5000`. Two registries now exist on the cluster.
 
+### 3.11 Argo CD Repo-Server Connectivity Issue
+
+The Argo CD repo-server (`10.109.94.133:8081`) is not reachable from the application controller via ClusterIP. This is a kube-router networking issue between nodes. The repo-server pod is running and healthy (verified via port-forward), but cross-node ClusterIP routing fails for this service. As a result, newly created Argo CD Applications (Jaeger, Loki) remain in `Unknown` sync status until this is resolved.
+
+**Workaround:** Restart the repo-server deployment or investigate kube-router network policies.
+
 ---
 
 ## 4. What Needs to Be Done
@@ -280,18 +288,18 @@ This is separate from the host-level Docker registry at `10.20.20.201:5000`. Two
   - Qdrant connectivity responds
   - Response time under X seconds
 - [x] **ServiceMonitor for api-gateway** — done. Prometheus scrapes `/metrics` every 15s via `servicemonitor.yaml`.
-- [ ] **ServiceMonitor for Qdrant** — Qdrant exposes metrics at `/metrics` already. A simple `ServiceMonitor` would let you see Qdrant query latency, collection sizes, etc. in Grafana.
+- [x] **ServiceMonitor for Qdrant** — done. `qdrant-monitor` deployed in `qdrant` namespace, scrapes `/metrics` every 30s.
 - [x] **AlertManager** — deployed with Telegram notifications (2 receivers). Custom alerts in `hite-infra-alerts` PrometheusRule. See §3.8.
 - [ ] **Change Argo CD admin password** from the default.
 - [ ] **TLS for Argo CD** — install cert-manager or configure SSL passthrough.
 - [x] **Ingress** — nginx-ingress deployed, Ingress resources for Grafana, Prometheus, AlertManager on `.hite.local` hosts. See §3.9.
 - [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
 - [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Loki data source already provisioned in Grafana via ConfigMap.
-- [ ] **Jaeger persistent storage** — Jaeger is currently using in-memory storage (data lost on restart). Switch to Elasticsearch or Cassandra for production.
-- [ ] **Jaeger in Argo CD** — deploy Jaeger via Argo CD Application for GitOps-managed lifecycle.
-- [ ] **Loki in Argo CD** — same as above, manage Loki stack via Argo CD.
+- [x] **Jaeger persistent storage** — migrated to Badger with 5Gi NFS PVC (`jaeger-badger-data`). TTL 720h. Data survives restarts.
+- [x] **Jaeger in Argo CD** — Application created (`k8s/jaeger/application.yaml`). Pending sync (repo-server connectivity issue).
+- [x] **Loki in Argo CD** — Application created (`k8s/loki/application.yaml`). Pending sync (repo-server connectivity issue).
 - [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Jaeger and Alertmanager data sources also configured.
-- [ ] **Jaeger ServiceMonitor** — expose Jaeger metrics to Prometheus for trace pipeline monitoring.
+- [x] **Jaeger ServiceMonitor** — done. Scrapes `internal-metrics:8888/metrics` every 30s. Target visible in Prometheus.
 
 ### 4.3 Long-Term
 
