@@ -289,7 +289,7 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
 - [x] **ServiceMonitor for api-gateway** — done. Prometheus scrapes `/metrics` every 15s via `servicemonitor.yaml`.
 - [x] **ServiceMonitor for Qdrant** — done. `qdrant-monitor` deployed in `qdrant` namespace, scrapes `/metrics` every 30s.
 - [x] **AlertManager** — deployed with Telegram notifications (2 receivers). Custom alerts in `hite-infra-alerts` PrometheusRule. See §3.8.
-- [ ] **Change Argo CD admin password** from the default.
+- [x] **Change Argo CD admin password** — changed from default. Initial admin secret deleted.
 - [ ] **TLS for Argo CD** — install cert-manager or configure SSL passthrough.
 - [x] **Ingress** — nginx-ingress deployed, Ingress resources for Grafana, Prometheus, AlertManager on `.hite.local` hosts. See §3.9.
 - [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
