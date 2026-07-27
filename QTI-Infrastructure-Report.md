@@ -1,6 +1,6 @@
 # QTI RAG Pipeline — Infrastructure Report
 
-**Date:** 2026-07-17 (Updated 2026-07-27 — Jaeger Badger storage, ServiceMonitors, Argo CD full ownership)
+**Date:** 2026-07-17 (Updated 2026-07-27 — Jaeger Badger storage, ServiceMonitors, Argo CD TLS + full ownership)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -19,7 +19,7 @@
 | **Promtail** | 2/2 Running (DaemonSet, both nodes) | Ship logs from all nodes to Loki |
 | **Jaeger** | 1/1 Running (Badger persistent storage, 5Gi NFS PVC) | OTLP gRPC `:4317`, OTLP HTTP `:4318`, UI `:16686`, metrics `:8888` |
 | **AlertManager** | 2/2 Running (StatefulSet) | `prometheus-kube-prometheus-alertmanager.monitoring:9093` — Telegram notifications active |
-| **Ingress-NGINX** | 1/1 Running (LoadBalancer) | NodePort 31084 (HTTP), 30616 (HTTPS) — routes to Grafana, Prometheus, AlertManager |
+| **Ingress-NGINX** | 1/1 Running (LoadBalancer) | NodePort 31084 (HTTP), 30616 (HTTPS) — routes to Grafana, Prometheus, AlertManager, ArgoCD |
 | **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
 | **hite-prod Registry** | 1/1 Running (Deployment) | `private-registry-svc.hite-prod:5000` (NodePort 32000) — Kubernetes-native registry:2 |
 
@@ -237,8 +237,9 @@ nginx ingress controller running as a LoadBalancer in `ingress-nginx` namespace 
 | `grafana-ingress` | `grafana.hite.local` | `prometheus-grafana:80` | 2026-07-16 |
 | `prometheus-ingress` | `prometheus.hite.local` | `prometheus-kube-prometheus-prometheus:9090` | 2026-07-22 |
 | `alertmanager-ingress` | `alertmanager.hite.local` | `prometheus-kube-prometheus-alertmanager:9093` | 2026-07-22 |
+| `argocd-server` | `argocd.hite.local` | `argocd-server:443` (HTTPS backend) | 2026-07-27 |
 
-All ingress rules use `ingressClassName: nginx` and `pathType: Prefix`. No TLS configured yet — HTTP only. Hostnames are `.hite.local` (requires /etc/hosts or internal DNS).
+All ingress rules use `ingressClassName: nginx` and `pathType: Prefix`. Hostnames are `.hite.local` (requires /etc/hosts or internal DNS). Argo CD ingress uses TLS termination at the ingress with self-signed cert (`argocd-tls` secret). CA cert generated locally at `/tmp/argocd-tls/ca.crt`.
 
 ### 3.10 hite-prod Namespace + Private Registry (Deployed 2026-07-16)
 
@@ -290,7 +291,7 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
 - [x] **ServiceMonitor for Qdrant** — done. `qdrant-monitor` deployed in `qdrant` namespace, scrapes `/metrics` every 30s.
 - [x] **AlertManager** — deployed with Telegram notifications (2 receivers). Custom alerts in `hite-infra-alerts` PrometheusRule. See §3.8.
 - [x] **Change Argo CD admin password** — changed from default. Initial admin secret deleted.
-- [ ] **TLS for Argo CD** — install cert-manager or configure SSL passthrough.
+- [x] **TLS for Argo CD** — done. Self-signed CA + server cert for `argocd.hite.local`. TLS terminates at nginx-ingress, HTTPS backend to Argo CD. See §3.9.
 - [x] **Ingress** — nginx-ingress deployed, Ingress resources for Grafana, Prometheus, AlertManager on `.hite.local` hosts. See §3.9.
 - [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
 - [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Loki data source already provisioned in Grafana via ConfigMap.
