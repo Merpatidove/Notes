@@ -10,7 +10,7 @@
 
 | Component | Status | Access |
 |---|---|---|
-| **Argo CD** | 7/7 pods Running | `http://<controller-ip>:30080` (admin / `8H2RJZIZPHhsaRts`) |
+| **Argo CD** | 7/7 pods Running | `https://argocd.hite.local` (admin / `12qwaszx`) |
 | **Qdrant** | 1/1 Running | `qdrant.qdrant.svc.cluster.local:6333`, NFS-backed PVC (10Gi) |
 | **api-gateway** | 1/1 Running, Healthy | `api-gateway.qti.svc:8080` — returns `{"status":"ok","version":"0.1.0"}` |
 | **NFS CSI driver** | 3/3 controller, 2/2 node pods | k0s path: `/var/lib/k0s/kubelet` |
@@ -111,7 +111,7 @@ git clone git@github.com-notes:Merpatidove/Notes.git
 - **No firewall** on the controller VM — `iptables`, `ufw`, and `nftables` are all absent. NFS, k0s API, Docker Swarm ports are exposed.
 - **No SSH keys** for any user except `ferdi` (who has no `authorized_keys`). All SSH is password-based.
 - **9 sudo users**, only 2 actively used (ferdi, hapip).
-- **Argo CD is `--insecure`** — no TLS. Change the admin password from the default.
+- **Argo CD** — admin password changed, TLS enabled via self-signed cert + ingress.
 - **Qdrant has no authentication**.
 - **This VM is a single point of failure** — k0s controller, NFS server, Docker host all run here. No HA.
 - **Telegram bot token in plaintext** — stored in AlertManager Secret and Helm values. Rotate if the token is reused elsewhere.
