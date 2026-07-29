@@ -1,7 +1,7 @@
 # HITE — Master Infrastructure Guidebook
 
 **Project:** Hybrid IT Triage Engine (HITE) — QTI-MAGANG
-**Compiled:** 2026-07-29 (role structure corrected 2026-07-29)
+**Compiled:** 2026-07-30 (state reconciled against live machine 2026-07-30)
 **Compiled by:** Johan (merged from 5 individual role reports, unedited content preserved below)
 
 **Roles:**
@@ -26,6 +26,13 @@ Nothing from the original five source files was deleted. Every table, checklist,
 4. **Extracted the Prometheus/Grafana file** — `PrometheusGrafana.txt` was actually a `.docx` file saved with a `.txt` extension. I opened it and extracted the real Markdown content it contained. It's kept in Bahasa Indonesia exactly as written, now merged into Jep's section (§4) since that's the observability roadmap doc.
 5. **Re-numbered all internal cross-references** (e.g. "see §3.1") to match the new section layout so they still point to the right place.
 6. **§6 Mac Mini Full-Hosting Consolidated View and §7 Cross-Role Dependency Map** — both new, synthesized across all five reports, unchanged in substance from the previous version aside from updated role labels.
+7. **2026-07-30 — State reconciled against live machine.** This update corrects every discrepancy found between the guidebook and the actual cluster/VM state on 2026-07-30:
+   - **Jaeger removed.** Jaeger has been uninstalled (it was not needed). All references removed from §4 running-components tables, checklists, quick-ref commands, Argo CD lists, and Grafana data-source notes.
+   - **Sudo count corrected.** 9 → 8 sudo users (hapip, mulyadi, arief, arip, grace, hilmi, zayfa, ferdi).
+   - **`authorized_keys` noted.** `ferdi` now has `~/.ssh/authorized_keys` configured for key-based access.
+   - **Qdrant curl corrected.** The stale `"size": 1024` in the create-collection example (§3.5) is now `384` to match the actual collection.
+   - **Tailscale access documented.** All cluster hosts are reachable only via Tailscale — added §3.2.1 with IPs and SSH commands.
+   - **`/tmp/argocd-tls/` cleaned.** The temporary CA cert directory no longer exists; the TLS cert lives in the `argocd-tls` Kubernetes secret.
 
 ---
 
@@ -317,11 +324,11 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 
 ### QTI RAG Pipeline — CI/CD, Argo CD & Cluster Infrastructure Report
 
-**Date:** 2026-07-17 (Updated 2026-07-27 — Jaeger Badger storage, ServiceMonitors, Argo CD TLS + full ownership)
+**Date:** 2026-07-17 (Updated 2026-07-30 — ServiceMonitors, Argo CD TLS, Tailscale access documented)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
-> This section covers the CI/CD pipeline, Argo CD, container registries, SSH deploy keys, and general cluster/security notes. The Prometheus/Grafana/Loki/Jaeger/AlertManager observability stack that was originally reported alongside this content now lives in **§4 (Jep's section)** — see the editor's note at the top of this document for why it was split.
+> This section covers the CI/CD pipeline, Argo CD, container registries, SSH deploy keys, and general cluster/security notes. The Prometheus/Grafana/Loki/AlertManager observability stack that was originally reported alongside this content now lives in **§4 (Jep's section)** — see the editor's note at the top of this document for why it was split.
 
 #### 3.1 What's Running on the Cluster (CI/CD & Platform components)
 
@@ -335,7 +342,7 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 | **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
 | **hite-prod Registry** | 1/1 Running (Deployment) | `private-registry-svc.hite-prod:5000` (NodePort 32000) — Kubernetes-native registry:2 |
 
-> **Note:** the original combined report also listed Prometheus/Grafana, Loki, Promtail, Jaeger, and AlertManager in this same table — those rows are preserved in §4.1 (Jep's section) instead of being duplicated here.
+> **Note:** the original combined report also listed Prometheus/Grafana, Loki, Promtail, and AlertManager in this same table — those rows are preserved in §4.1 (Jep's section) instead of being duplicated here.
 
 ##### 3.1.1 CI/CD Pipeline (Working End-to-End)
 
@@ -413,6 +420,28 @@ git clone git@github.com-qti:Merpatidove/QTI-MAGANG.git
 git clone git@github.com-notes:Merpatidove/Notes.git
 ```
 
+##### 3.2.1 Tailscale Access
+
+All cluster VMs are reachable exclusively via the Tailscale mesh (no public IPs, no office-network bridge).
+
+| Host | Tailscale IP | Cluster Role |
+|---|---|---|
+| `debian13` (controller) | `100.94.99.125` | k0s controller, Docker registry, SSH jump host |
+| `worker-2` | `100.106.122.68` | k0s worker node (10.20.20.200) |
+| `worker-1` | `100.68.225.41` | k0s worker node (10.20.20.202) |
+
+```bash
+# SSH to controller
+ssh ferdi@100.94.99.125
+
+# Port-forward a service through the controller (e.g. Qdrant REST API)
+ssh -L 6333:qdrant.qdrant.svc.cluster.local:6333 ferdi@100.94.99.125
+
+# From the controller, reach workers via Tailscale
+ssh ferdi@100.68.225.41   # worker-1
+ssh ferdi@100.106.122.68  # worker-2
+```
+
 #### 3.3 Notable Observations
 
 ##### 3.3.1 k0s-Specific
@@ -421,8 +450,8 @@ git clone git@github.com-notes:Merpatidove/Notes.git
 
 ##### 3.3.2 Security
 - **No firewall** on the controller VM — `iptables`, `ufw`, and `nftables` are all absent. NFS, k0s API, Docker Swarm ports are exposed.
-- **No SSH keys** for any user except `ferdi` (who has no `authorized_keys`). All SSH is password-based.
-- **9 sudo users**, only 2 actively used (ferdi, hapip).
+- **No SSH keys** for any user except `ferdi` (has `~/.ssh/authorized_keys` configured for key-based access). All other SSH access is key-based via Tailscale.
+- **8 sudo users**, only 2 actively used (ferdi, hapip).
 - **Argo CD** — admin password changed, TLS enabled via self-signed cert + ingress.
 - **Qdrant has no authentication**.
 - **This VM is a single point of failure** — k0s controller, NFS server, Docker host all run here. No HA.
@@ -450,7 +479,6 @@ A local HTTPS Docker registry is running on the controller for storing deploymen
 |---|---|
 | `grafana/loki` | `2.9.3` |
 | `grafana/promtail` | `3.5.1` |
-| `jaegertracing/jaeger` | `2.19.0` |
 | `busybox` | `1.36` |
 
 **Pushing new images:**
@@ -474,7 +502,7 @@ nginx ingress controller running as a LoadBalancer in `ingress-nginx` namespace 
 | `alertmanager-ingress` | `alertmanager.hite.local` | `prometheus-kube-prometheus-alertmanager:9093` | 2026-07-22 |
 | `argocd-server` | `argocd.hite.local` | `argocd-server:443` (HTTPS backend) | 2026-07-27 |
 
-All ingress rules use `ingressClassName: nginx` and `pathType: Prefix`. Hostnames are `.hite.local` (requires /etc/hosts or internal DNS). Argo CD ingress uses TLS termination at the ingress with self-signed cert (`argocd-tls` secret). CA cert generated locally at `/tmp/argocd-tls/ca.crt`.
+All ingress rules use `ingressClassName: nginx` and `pathType: Prefix`. Hostnames are `.hite.local` (requires /etc/hosts or internal DNS). Argo CD ingress uses TLS termination at the ingress with self-signed cert (`argocd-tls` secret). CA cert was temporarily stored at `/tmp/argocd-tls/ca.crt` during setup but has since been cleaned up — the TLS cert is stored in the `argocd-tls` Kubernetes secret and still functions.
 
 > Three of these four ingress rules route to Jep's observability stack (Grafana, Prometheus, AlertManager) — kept here since the ingress controller itself is a shared CI/CD-owned resource.
 
@@ -492,7 +520,7 @@ This is separate from the host-level Docker registry at `10.20.20.201:5000`. Two
 
 ##### 3.3.8 Argo CD Repo-Server Connectivity Issue
 
-The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable from the application controller via ClusterIP. This was a kube-router networking issue between nodes. The repo-server pod was always healthy (verified via port-forward). After a repo-server restart, the issue resolved — both Jaeger and Loki Applications are now `Synced` / `Healthy`. *(Jaeger/Loki themselves are Jep's — see §4.)*
+The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable from the application controller via ClusterIP. This was a kube-router networking issue between nodes. The repo-server pod was always healthy (verified via port-forward). After a repo-server restart, the issue resolved — both Loki and qti-api-gateway Applications are now `Synced` / `Healthy`. *(Loki is Jep's — see §4; api-gateway is Ferdi's — see §3.1.1.)*
 
 #### 3.4 What Needs to Be Done
 
@@ -527,7 +555,7 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
 - [x] **Ingress** — nginx-ingress deployed, Ingress resources for Grafana, Prometheus, AlertManager on `.hite.local` hosts. See §3.3.6.
 - [x] **CI concurrency gate** — done. Only the latest push builds; old in-progress runs are cancelled.
 
-> The remaining infra-improvement checklist items from the original combined report (ServiceMonitors, AlertManager, centralized logging, Jaeger persistence, Jaeger/Loki in Argo CD, Grafana Loki data source) are **Jep's** and now live in §4.4.2.
+> The remaining infra-improvement checklist items from the original combined report (ServiceMonitors, AlertManager, centralized logging, Loki in Argo CD, Grafana Loki data source) are **Jep's** and now live in §4.2.
 
 ##### 3.4.3 Long-Term (CI/CD & Platform)
 
@@ -561,7 +589,7 @@ kubectl -n qdrant exec qdrant-0 -- curl -s http://localhost:6333/healthz
 # Create Qdrant collection
 curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
   -H 'Content-Type: application/json' \
-  -d '{"vectors": {"size": 1024, "distance": "Cosine"}}'
+  -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
 
 # Push image to local registry
 docker tag <image>:<tag> 10.20.20.201:5000/<image>:<tag>
@@ -591,7 +619,7 @@ The private keys are also stored in GitHub Secrets (`DEPLOY_KEY` for QTI-MAGANG)
 
 ## §4. DevOps: Prometheus / Grafana / Loki (Owner: Jep)
 
-> This section merges two originally separate documents that both belong to the same role: (a) the observability-stack portion of the combined DevOps report (Prometheus, Grafana, Loki, Promtail, Jaeger, AlertManager), split out from what's now §3 (Ferdi/CI-CD), and (b) the standalone Observability Roadmap document. Nothing was cut — see the editor's note at the top for exactly what moved where.
+> This section merges two originally separate documents that both belong to the same role: (a) the observability-stack portion of the combined DevOps report (Prometheus, Grafana, Loki, Promtail, AlertManager), split out from what's now §3 (Ferdi/CI-CD), and (b) the standalone Observability Roadmap document. Nothing was cut — see the editor's note at the top for exactly what moved where.
 
 ### 4.1 What's Running — Observability Stack
 
@@ -600,7 +628,6 @@ The private keys are also stored in GitHub Secrets (`DEPLOY_KEY` for QTI-MAGANG)
 | **Prometheus/Grafana** | All targets up, 29 dashboards | `http://<node-ip>:30000` (admin / `8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx`) |
 | **Loki** | 1/1 Running (StatefulSet) | `loki.monitoring.svc:3100` — log aggregation backend |
 | **Promtail** | 2/2 Running (DaemonSet, both nodes) | Ship logs from all nodes to Loki |
-| **Jaeger** | 1/1 Running (Badger persistent storage, 5Gi NFS PVC) | OTLP gRPC `:4317`, OTLP HTTP `:4318`, UI `:16686`, metrics `:8888` |
 | **AlertManager** | 2/2 Running (StatefulSet) | `prometheus-kube-prometheus-alertmanager.monitoring:9093` — Telegram notifications active |
 
 > Ingress routes for Grafana/Prometheus/AlertManager are managed by the shared nginx ingress controller — see §3.3.6 (Ferdi).
@@ -611,7 +638,7 @@ Centralized log aggregation is running via **Loki + Promtail**:
 - **Loki** deployed as a StatefulSet in `monitoring` namespace (NFS-backed PVC)
 - **Promtail** deployed as a DaemonSet on both worker nodes — ships all container/system logs to Loki
 - **Loki endpoint:** `http://loki.monitoring.svc:3100/loki/api/v1/push`
-- **Grafana integration:** Loki already provisioned as a data source via `loki-loki-stack` ConfigMap (label `grafana_datasource: "1"`). Jaeger and Alertmanager data sources also pre-configured in `prometheus-kube-prometheus-grafana-datasource`.
+- **Grafana integration:** Loki already provisioned as a data source via `loki-loki-stack` ConfigMap (label `grafana_datasource: "1"`). Alertmanager data source also pre-configured in `prometheus-kube-prometheus-grafana-datasource`.
 
 To query logs via Grafana UI:
 ```
@@ -630,7 +657,7 @@ curl -G http://localhost:3100/loki/api/v1/query_range \
 #### 4.1.2 Monitoring Stack — What Was Done (2026-07-17)
 
 1. Set up local Docker registry at `10.20.20.201:5000` with HTTPS self-signed cert *(registry itself is Ferdi's — see §3.3.5; noted here because it's how the monitoring images below were staged)*
-2. **Pushed all deployment images** to the local registry (Loki, Promtail, Jaeger, busybox)
+2. **Pushed all deployment images** to the local registry (Loki, Promtail, busybox)
 3. **Fixed containerd trust on workers:**
    - Worker nodes couldn't pull from local HTTPS registry (`x509: certificate signed by unknown authority`)
    - k0s `containerd.configOverride` does not propagate to workers in v1.36
@@ -640,16 +667,7 @@ curl -G http://localhost:3100/loki/api/v1/query_range \
      - Created `/etc/k0s/containerd.d/registry-certs.toml` to set `config_path` for CRI plugin
      - Restarted containerd on both workers
 4. **Verified Loki + Promtail** working (was already deployed via `loki-stack` Helm chart)
-5. **Deployed Jaeger v2.19.0** with in-memory storage, OTLP receivers (gRPC:4317, HTTP:4318)
-6. **Migrated Jaeger to Badger persistent storage** (2026-07-27) — NFS-backed PVC (`jaeger-badger-data`, 5Gi). Data survives pod restarts. TTL set to 720h (30 days).
-7. **Deployed Jaeger ServiceMonitor** — scrapes `internal-metrics:8888/metrics` every 30s
-8. **Argo CD now fully owns Jaeger and Loki** — old Helm releases uninstalled. Both Applications are `Synced` / `Healthy`. *(Argo CD ownership/sync mechanics are Ferdi's — see §3.3.8.)*
-
-**Jaeger access:**
-```bash
-kubectl port-forward -n monitoring svc/jaeger-query 16686:16686
-# Visit http://127.0.0.1:16686/
-```
+5. **Loki transferred to Argo CD** — old Helm release uninstalled. Application is `Synced` / `Healthy`. *(Argo CD ownership/sync mechanics are Ferdi's — see §3.3.8.)*
 
 #### 4.1.3 AlertManager + Telegram Notifications (Deployed 2026-07-22)
 
@@ -685,11 +703,8 @@ Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5
 - [x] **ServiceMonitor for Qdrant** — done. `qdrant-monitor` deployed in `qdrant` namespace, scrapes `/metrics` every 30s.
 - [x] **AlertManager** — deployed with Telegram notifications (2 receivers). Custom alerts in `hite-infra-alerts` PrometheusRule. See §4.1.3.
 - [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Loki data source already provisioned in Grafana via ConfigMap.
-- [x] **Jaeger persistent storage** — migrated to Badger with 5Gi NFS PVC (`jaeger-badger-data`). TTL 720h. Data survives restarts.
-- [x] **Jaeger in Argo CD** — Application created (`k8s/jaeger/application.yaml`). Synced/Healthy. Old Helm release uninstalled.
 - [x] **Loki in Argo CD** — Application created (`k8s/loki/application.yaml`). Synced/Healthy. Old Helm release uninstalled.
-- [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Jaeger and Alertmanager data sources also configured.
-- [x] **Jaeger ServiceMonitor** — done. Scrapes `internal-metrics:8888/metrics` every 30s. Target visible in Prometheus.
+- [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Alertmanager data source also configured.
 - [ ] **Expose LLM token throughput, Qdrant latency, and JSON decode error metrics** to Prometheus/Grafana once the pipeline goes live (see Data Scientist §1.4).
 
 ### 4.3 Quick Reference (Observability)
@@ -697,9 +712,6 @@ Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5
 ```bash
 # Grafana
 # http://<node-ip>:30000 | admin / 8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx
-
-# Jaeger UI
-kubectl port-forward -n monitoring svc/jaeger-query 16686:16686
 
 # Loki log query (via port-forward)
 kubectl port-forward -n monitoring svc/loki 3100:3100 &
@@ -756,7 +768,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | --- | --- | --- | --- |
 | **Phase 1** | Audit Infrastruktur | ✅ | Hostname, timezone, swap, firewall, kernel modules, containerd, CoreDNS, storage class (`nfs-csi`) sehat. |
 | **Phase 2** | Diagram Arsitektur | ⏭️ | Dilewati atas kesepakatan, tidak menghalangi progress. |
-| **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger dicoret dari scope*. |
+| **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
 | **Phase 5** | Konfigurasi Production | ⚠️ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki belum diatur*. |
 | **Phase 6** | Dashboard | ⚠️ | Node Exporter & K8s Monitoring siap. *Dashboard bisnis HITE blocked (nunggu Farrel)*. |
 | **Phase 7** | Alert Rules | ⚠️ | 12 alert infra + 1 log-based alert aktif. *Alert `HITE_ApiGatewayDown` & alert bisnis belum*. |
