@@ -33,7 +33,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - **Qdrant curl corrected.** The stale `"size": 1024` in the create-collection example (§3.5) is now `384` to match the actual collection.
    - **Tailscale access documented.** All cluster hosts are reachable only via Tailscale — added §3.2.1 with IPs and SSH commands.
    - **`/tmp/argocd-tls/` cleaned.** The temporary CA cert directory no longer exists; the TLS cert lives in the `argocd-tls` Kubernetes secret.
-   - **Wireguard added.** New §3.2.2 documents the VM↔Mac Mini Wireguard tunnel (`10.10.10.0/24`) for LLM traffic.
+   - **Wireguard added.** New §3.2.2 documents the VM↔Mac Mini Wireguard tunnel (`10.10.10.0/24`) for LLM traffic. Tunnel verified operational 2026-07-30: handshake established, 26-30ms latency, Ollama models reachable from VM at `10.10.10.2:11434`.
 
 ---
 
@@ -466,7 +466,7 @@ PublicKey = W/ZjEHMjrkDq+rv3QJxZieL7MZlz6guijDN0i+RSmwA=
 AllowedIPs = 10.10.10.2/32
 ```
 
-**Mac Mini config** (`/usr/local/etc/wireguard/wg0.conf` on macOS):
+**Mac Mini config** (`/opt/homebrew/etc/wireguard/wg0.conf` on macOS — Homebrew prefix):
 ```ini
 [Interface]
 Address = 10.10.10.2/24
@@ -479,17 +479,44 @@ AllowedIPs = 10.10.10.1/32
 PersistentKeepalive = 25
 ```
 
+**Mac Mini (macOS) — live state (verified 2026-07-30):**
+
+| Item | Value |
+|---|---|
+| Interface | `utun6` (wg0) |
+| Config path | `/opt/homebrew/etc/wireguard/wg0.conf` |
+| Private key | `/opt/homebrew/etc/wireguard/mm-vm-private.key` |
+| Public key | `W/ZjEHMjrkDq+rv3QJxZieL7MZlz6guijDN0i+RSmwA=` |
+| Ollama binding | `10.10.10.2:11434` (`OLLAMA_HOST=10.10.10.2:11434`) |
+| Auto-start | LaunchDaemon `/Library/LaunchDaemons/com.wireguard.wg0.plist` |
+| Latency (VM↔Mac Mini) | 26-30ms, 0% loss |
+| Mac Mini hostname | `Qtis-Mac-mini.local` (mDNS), Tailscale IP `100.79.30.90` |
+
+**Models available on Mac Mini via WireGuard (Ollama):**
+
+| Model | Size |
+|---|---|
+| `all-minilm:latest` | 46MB (embedding, 384-dim) |
+| `Ornith-1.0-9B (Q4_K_M)` | 5.6GB |
+| `Qwen2.5-Coder-7B (Q4_K_M)` | 4.7GB |
+| `llama3:latest (Q4_0)` | 4.7GB |
+
 **Getting LLM access from the VM:**
 ```bash
 # After both sides have wg-quick up wg0, Ollama is reachable at:
 curl http://10.10.10.2:11434/api/tags
+
+# Verify handshake
+sudo wg show wg0 | grep handshake
 ```
 
 **Important notes:**
 - **Tailscale must be up first** on both sides — the Mac Mini's `Endpoint` is a Tailscale IP (`100.94.99.125`), so it won't resolve if Tailscale is down.
 - **Fresh key required** — the Mac Mini's Wireguard key must be generated with `wg genkey`; do not reuse the key from any existing macOS Wireguard tunnel (`mac-mini-ops` or similar).
-- **Ollama binding** — ensure `OLLAMA_HOST` is set to `0.0.0.0:11434` (not `127.0.0.1`) so it listens on the Wireguard interface.
-- **macOS auto-start** — use a LaunchDaemon (`/Library/LaunchDaemons/com.wireguard.wg0.plist`) to bring `wg0` up automatically on boot with `KeepAlive`.
+- **Ollama binding** — use `OLLAMA_HOST=10.10.10.2:11434` (binds directly to the WireGuard interface; `0.0.0.0` on macOS binds to IPv6 `[::]` which may not accept IPv4 connections from the tunnel).
+- **macOS auto-start** — LaunchDaemon installed at `/Library/LaunchDaemons/com.wireguard.wg0.plist` with `KeepAlive`. Load with: `sudo launchctl load /Library/LaunchDaemons/com.wireguard.wg0.plist`.
+- **`wg-quick` on macOS** searches configs in order: `/etc/wireguard/`, `/usr/local/etc/wireguard/`, `/opt/homebrew/etc/wireguard/`. The config lives under the Homebrew prefix since that directory is user-writable.
+- **Pre-existing tunnel** — the Mac Mini also has a separate WireGuard tunnel **"mac-mini-ops"** (utun4, IP `10.7.0.63`, endpoint `117.54.250.111:51820`) managed by the macOS WireGuard app — connects to the ops infrastructure controller at `10.20.20.201`. Recovery script at `~/wg-recover.sh`. Do not confuse or reuse keys between tunnels.
 
 #### 3.3 Notable Observations
 
@@ -1010,13 +1037,13 @@ curl -k -H "Authorization: Bearer $TOKEN" https://10.20.20.202:10250/metrics
 ### 6.2 Open contradictions to resolve before committing to full-hosting
 
 1. **Is the k0s cluster running on the Mac Mini, or does the Mac Mini just host inference (Ollama/Qwen) alongside a separate cluster on VM IPs 10.20.20.201/202/200?** Platform Eng and DevOps CI/CD reports both describe the cluster living on those VM IPs with **no HA** and a **single point of failure** — this reads as physically separate hardware from the Mac Mini. But the Data Scientist report and the "XOA hypervisor" question both suggest the Mac Mini might *be* that physical box underneath. This is the single biggest open question and should be confirmed with Ferdi/Hilmi before any full-hosting plan is finalized.
-2. **Two different network paths to the Mac Mini exist simultaneously and neither team seems aware of the other's:** Platform Eng relies on a **Reverse SSH Tunnel** (`launchctl`-managed, ports 19100/11434) while Data Engineering relies on **Tailscale** (`100.79.30.90`). If you fully host on the Mac Mini, you'll want to standardize on one — running both increases the surface area for the exact kind of connectivity issues already blocking Phase 8 of the observability roadmap.
+2. **Two different network paths to the Mac Mini exist simultaneously and neither team seems aware of the other's:** Platform Eng relies on a **Reverse SSH Tunnel** (`launchctl`-managed, ports 19100/11434) while Data Engineering relies on **Tailscale** (`100.79.30.90`). **Update 2026-07-30:** a third path has been added — **WireGuard over Tailscale** (`10.10.10.0/24`, §3.2.2) — which provides a dedicated encrypted tunnel between the VM and Mac Mini for LLM traffic (5x latency improvement over Tailscale DERP relay). This is now the recommended path for inference traffic. The Reverse SSH Tunnel remains in place for Node Exporter metrics and legacy access.
 3. **Location is still in flux.** As of Platform Eng's report the Mac Mini was at an employee's home, not the office — full-hosting plans should nail down the physical location first, since it changes which network path (tunnel vs. Tailscale vs. office LAN) is even viable.
 4. **ARM build implications for full-hosting:** if `data-pipeline`, `api-gateway`, and any future services also move onto the Mac Mini, expect the same first-build ARM recompilation tax described in Data Engineering §2.3.8 for any new Rust crate, and check that all Docker images used cluster-wide have `linux/arm64` variants — the current setup assumes `x86_64`-style workers.
 
 ### 6.3 Suggested next step
 
-Given the above, before writing a full-hosting migration plan it's worth getting three yes/no answers on record: (1) is the Mac Mini the XOA hypervisor host — yes/no; (2) tunnel or Tailscale as the one standard path — pick one; (3) final physical location — office or remote. Everything else (DNS, firewall rules, ARM builds, Qdrant reachability for `data-pipeline`) hangs off those three answers.
+Given the above, before writing a full-hosting migration plan it's worth getting three yes/no answers on record: (1) is the Mac Mini the XOA hypervisor host — yes/no; (2) tunnel or Tailscale as the one standard path — **answered 2026-07-30: WireGuard over Tailscale (§3.2.2) is now operational and recommended for inference traffic**; (3) final physical location — office or remote. Everything else (DNS, firewall rules, ARM builds, Qdrant reachability for `data-pipeline`) hangs off those three answers.
 
 ---
 
