@@ -33,6 +33,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - **Qdrant curl corrected.** The stale `"size": 1024` in the create-collection example (§3.5) is now `384` to match the actual collection.
    - **Tailscale access documented.** All cluster hosts are reachable only via Tailscale — added §3.2.1 with IPs and SSH commands.
    - **`/tmp/argocd-tls/` cleaned.** The temporary CA cert directory no longer exists; the TLS cert lives in the `argocd-tls` Kubernetes secret.
+   - **Wireguard added.** New §3.2.2 documents the VM↔Mac Mini Wireguard tunnel (`10.10.10.0/24`) for LLM traffic.
 
 ---
 
@@ -441,6 +442,54 @@ ssh -L 6333:qdrant.qdrant.svc.cluster.local:6333 ferdi@100.94.99.125
 ssh ferdi@100.68.225.41   # worker-1
 ssh ferdi@100.106.122.68  # worker-2
 ```
+
+##### 3.2.2 Wireguard — VM ↔ Mac Mini LLM Link
+
+Wireguard provides a dedicated encrypted tunnel between the controller VM and the Mac Mini for LLM traffic, avoiding the Tailscale DERP relay overhead.
+
+**Subnet:** `10.10.10.0/24`
+
+| Side | Wireguard IP | Wireguard Public Key |
+|---|---|---|
+| Controller VM (debian13) | `10.10.10.1` | `IMDZ7747SpFcdPJaNNydUUJ3DPi1sq4Z/jFLDE03lXk=` |
+| Mac Mini (qtis-mac-mini) | `10.10.10.2` | `W/ZjEHMjrkDq+rv3QJxZieL7MZlz6guijDN0i+RSmwA=` |
+
+**VM config** (`/etc/wireguard/wg0.conf`):
+```ini
+[Interface]
+Address = 10.10.10.1/24
+ListenPort = 51820
+PrivateKey = GNAX6apvqInSr/p15179ib+hUVydn+m7h5mP5SL/Ylc=
+
+[Peer]
+PublicKey = W/ZjEHMjrkDq+rv3QJxZieL7MZlz6guijDN0i+RSmwA=
+AllowedIPs = 10.10.10.2/32
+```
+
+**Mac Mini config** (`/usr/local/etc/wireguard/wg0.conf` on macOS):
+```ini
+[Interface]
+Address = 10.10.10.2/24
+PrivateKey = <MacMini-PrivateKey>   # fresh key, NOT reusing mac-mini-ops tunnel key
+
+[Peer]
+PublicKey = IMDZ7747SpFcdPJaNNydUUJ3DPi1sq4Z/jFLDE03lXk=
+Endpoint = 100.94.99.125:51820
+AllowedIPs = 10.10.10.1/32
+PersistentKeepalive = 25
+```
+
+**Getting LLM access from the VM:**
+```bash
+# After both sides have wg-quick up wg0, Ollama is reachable at:
+curl http://10.10.10.2:11434/api/tags
+```
+
+**Important notes:**
+- **Tailscale must be up first** on both sides — the Mac Mini's `Endpoint` is a Tailscale IP (`100.94.99.125`), so it won't resolve if Tailscale is down.
+- **Fresh key required** — the Mac Mini's Wireguard key must be generated with `wg genkey`; do not reuse the key from any existing macOS Wireguard tunnel (`mac-mini-ops` or similar).
+- **Ollama binding** — ensure `OLLAMA_HOST` is set to `0.0.0.0:11434` (not `127.0.0.1`) so it listens on the Wireguard interface.
+- **macOS auto-start** — use a LaunchDaemon (`/Library/LaunchDaemons/com.wireguard.wg0.plist`) to bring `wg0` up automatically on boot with `KeepAlive`.
 
 #### 3.3 Notable Observations
 
