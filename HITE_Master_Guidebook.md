@@ -1,7 +1,7 @@
 # HITE — Master Infrastructure Guidebook
 
 **Project:** Hybrid IT Triage Engine (HITE) — QTI-MAGANG
-**Compiled:** 2026-07-30 (state reconciled against live machine 2026-07-30)
+**Compiled:** 2026-07-30 (state reconciled against live machine 2026-07-31)
 **Compiled by:** Johan (merged from 5 individual role reports, unedited content preserved below)
 
 **Roles:**
@@ -42,6 +42,13 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - **Qdrant populated.** `qti_knowledge_base` now holds **83 points** (18 SOPs, chunked) at 384-dim/Cosine — Data Engineering ingestion is done.
    - **Promtail RBAC for `qti` confirmed.** `api-gateway` logs (namespace `qti`) reach Loki — row 6 of the §7 map is resolved.
    - **Still open:** business metrics (`qti_*`) not yet instrumented; DS 5W1H schema mismatch with the API contract; `clients/inference.rs` design question; XOA hypervisor question (full-hosting §6).
+9. **2026-07-31 — Follow-up reconciliation vs. live machine + repo; Jep's PR #1 merged.** Cross-checked every §3/§4 status against the deployed cluster and the manifests in `QTI-MAGANG`:
+   - **Jep's updates (PR #1) incorporated:** `hite-infra-alerts` now counts **13 rules** (added `HITE_ApiGatewayDown`), observability Phase 9 log E2E marked done — `api-gateway` logs (ns `qti`) confirmed reaching Loki; §4.5 api-gateway row updated (metric/log/alert ✅).
+   - **§4.1.3 alert table extended** from 6 → 13 rows to match the actual PrometheusRule (source of truth: `k8s/prometheus/hite-infra-alerts.yaml`).
+   - **`QDRANT_URL` env-read is already implemented** (`clients/qdrant.rs` reads the env var, falling back to in-cluster DNS) — §2.4 TODO moved to done; only the Secret mounting (§3.4.1) remains open.
+   - **Image size note corrected** — the "~32 MB" figure predates baking `all-MiniLM-L6-v2` into the image (`a0b4bec` is larger).
+   - **`/metrics` correction** — `http_requests_total` is registered but never incremented, so it does not appear in the exported metrics; only `health_checks_total` and `queries_total` are live.
+   - **Live check 2026-07-31:** `GET http://100.106.122.68:30082/v1/health` → `{"status":"ok","version":"0.1.0"}`.
 
 ---
 
@@ -167,8 +174,8 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 | `api-gateway/src/clients/mod.rs` | Working, deployed | Module table of contents: `pub mod qdrant;` |
 | `api-gateway/src/clients/qdrant.rs` | Written, compiled, **WIRED + deployed** | `search_sop(Vec<f32>) -> Result<...>` via `reqwest` (REST, :6333). Constants `QDRANT_URL = http://qdrant.qdrant.svc.cluster.local:6333`, `COLLECTION_NAME = qti_knowledge_base`. Called from `query.rs` since commit `10898a1` (2026-07-31). |
 | `api-gateway/src/clients/inference.rs` | **NOT written** | Mac Mini inference client — possibly obsolete (see §2.3.6 / §2.4). |
-| `api-gateway/Cargo.toml` | Working | axum 0.8, tokio `[full]`, serde `[derive]`, serde_json, reqwest 0.12 `[rustls-tls, json]`, tracing, tracing-subscriber `[env-filter]`, prometheus 0.13 `[process]`, lazy_static 1.4, anyhow 1.0. |
-| `api-gateway/Dockerfile` | Working | Multi-stage `rust:1-bookworm` → `debian:bookworm-slim`; image ~32 MB. |
+| `api-gateway/Cargo.toml` | Working | axum 0.8, tokio `[full]`, serde `[derive]`, serde_json, reqwest 0.12 `[rustls-tls, json]`, tracing, tracing-subscriber `[env-filter]`, prometheus 0.13 `[process]`, lazy_static 1.4, anyhow 1.0, **fastembed 4**. |
+| `api-gateway/Dockerfile` | Working | Multi-stage `rust:1-bookworm` → `debian:bookworm-slim`; was ~32 MB before `--download-only` baked the embedding model in (image `a0b4bec` is larger). |
 | `api-gateway/k8s/deployment.yaml` | Working | Liveness + readiness probes on `/v1/health`; `EMBED_CACHE_DIR=/opt/fastembed` env (2026-07-31, model baked into image). |
 | `api-gateway/k8s/service.yaml` | Working | NodePort 30082 (was ClusterIP on 8080; changed 2026-07-31). |
 | `api-gateway/k8s/kustomization.yaml` | Working | `newTag: <sha>` managed by CI commit-back. |
@@ -246,7 +253,7 @@ The Mac Mini is ARM. The first `cargo build` of `data-pipeline` there recompiles
 
 ##### 2.3.9 Qdrant has no auth; secrets are TODO
 
-Qdrant currently has **no authentication** (DevOps CI/CD report §3.3.2). My constants hardcode the URL; per §2.4 these should move to K8s Secrets (`QDRANT_URL`, and `INFERENCE_URL` if inference stays) mounted as env vars — that is a DevOps deliverable; my code just needs to read the env var instead of the constant when it exists.
+Qdrant currently has **no authentication** (DevOps CI/CD report §3.3.2). My constants hardcode the URL; per §2.4 these should move to K8s Secrets (`QDRANT_URL`, and `INFERENCE_URL` if inference stays) mounted as env vars — that is a DevOps deliverable; my code just needs to read the env var instead of the constant when it exists. *(Update 2026-07-31: the env-var read is done in `clients/qdrant.rs` — see §2.4; the Secret mounting is the remaining piece.)*
 
 ##### 2.3.10 Rust module system (code-structure gotcha)
 
@@ -255,6 +262,10 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 ##### 2.3.11 `data-pipeline` reads `RAG_Manual.md` by relative path
 
 `fs::read_to_string("RAG_Manual.md")` resolves against the **current working directory**, so `cargo run` must be executed from inside `data-pipeline/` with the manual present there, or it panics with the "Failed to read RAG_Manual.md" message.
+
+##### 2.3.12 `INFERENCE_URL` in the Deployment is dead config
+
+`k8s/deployment.yaml` sets `INFERENCE_URL=http://inference-mac-mini:8080`, but no such Service/DNS exists in the cluster and the gateway is retrieval-only (§2.3.6) — it never makes an outbound inference call, so the env var is unused. Harmless, but it should be removed (or replaced by a real secret) when the Deployment is next touched (§3.4.1 "Add secrets").
 
 #### 2.4 What Needs to Be Done (TODOs)
 
@@ -274,7 +285,7 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 - [x] **Populate the collection** — done 2026-07-31: chunk → embed `all-MiniLM-L6-v2` (384-dim) → upsert UUID-v4 point IDs with payload `{text, sop_id, title, category, tier}`. `qti_knowledge_base` = **83 points**.
 - [x] **Wire `/v1/query`** to call `clients::qdrant::search_sop` — done (commit `10898a1`); verified live returning real SOP text.
 - [ ] **Confirm `clients/inference.rs`** is needed; if the gateway is retrieval-only (§2.3.6), do not build it.
-- [ ] Move hardcoded `QDRANT_URL` to an env var once DevOps mounts the `QDRANT_URL` Secret (§2.3.9).
+- [x] Move hardcoded `QDRANT_URL` to an env var — **done** (`clients/qdrant.rs` reads `QDRANT_URL`, falls back to in-cluster DNS). Remaining: DevOps mounts it as a K8s Secret (§3.4.1).
 
 **Long-term**
 
@@ -769,7 +780,7 @@ AlertManager is deployed as a StatefulSet in `monitoring` namespace, pulling its
 
 **Routing:** 30s group_wait, 5m group_interval, 3h repeat_interval. `Watchdog` alert suppressed (sent to null receiver).
 
-**Custom PrometheusRule `hite-infra-alerts`** (created 2026-07-22):
+**Custom PrometheusRule `hite-infra-alerts`** (created 2026-07-22; **13 rules** as of 2026-07-31 — source of truth: `k8s/prometheus/hite-infra-alerts.yaml`):
 
 | Alert | Severity | Trigger |
 |---|---|---|
@@ -779,6 +790,13 @@ AlertManager is deployed as a StatefulSet in `monitoring` namespace, pulling its
 | `HITE_PodCrashLooping` | critical | CrashLoopBackOff for 2m |
 | `HITE_NodeDown` | critical | node-exporter unreachable 2m |
 | `HITE_QdrantDown` | critical | Qdrant unreachable 2m |
+| `HITE_NodeMemoryPressure` | critical | MemoryPressure node condition for 2m |
+| `HITE_NodeDiskPressure` | critical | DiskPressure node condition for 2m |
+| `HITE_NodeRecentlyRestarted` | warning | node booted < 5m ago (immediate) |
+| `HITE_ContainerMemoryNearLimit` | warning | container memory working set > 90% of limit for 5m |
+| `HITE_ContainerCPUThrottled` | warning | > 50% of CFS periods throttled for 5m |
+| `HITE_DeploymentReplicasMismatch` | warning | spec replicas ≠ status replicas for 5m |
+| `HITE_ApiGatewayDown` | critical | api-gateway (`job="api-gateway"`) unreachable 2m |
 
 Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5 menit").
 
@@ -885,7 +903,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 ### 3. Application Layer
 
 - [x] **Qdrant**: Lengkap (ServiceMonitor + Alerting)
-- [✅] **Rust API (`api-gateway`)**: Metric infra ✅, log ✅), alert Down ✅
+- [✅] **Rust API (`api-gateway`)**: Metric infra ✅, log ✅, alert Down ✅
 - [❌] **Mac Mini / Inference / LLM**: Belum tersentuh sama sekali
 
 ### 4. Business Metrics
@@ -1068,7 +1086,7 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved** — ingestion ran via SSH port-forward tunnel; `qti_knowledge_base` = **83 points**. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
 | DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) | "Blocked total" per §4.4, Phase 8 — same root cause as the two rows above. | ⏳ **Partial** — Mac Mini reachable via WireGuard (§3.2.2), so the infra blocker is gone; pipeline-monitoring work (Loki logs + metrics) still in progress. |
-| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ **Open / Blocked on Farrel** — `qti_*` business metrics still not instrumented; `/metrics` currently exposes only `health_checks_total`, `queries_total`, `http_requests_total`. |
+| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ **Open / Blocked on Farrel** — `qti_*` business metrics still not instrumented; `/metrics` currently exposes only `health_checks_total`, `queries_total` (`http_requests_total` is registered but never incremented, so not exported). |
 | Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
 | `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | May be entirely unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ⏳ **Open** — gateway deployed retrieval-only; file never built. |
