@@ -34,6 +34,14 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - **Tailscale access documented.** All cluster hosts are reachable only via Tailscale — added §3.2.1 with IPs and SSH commands.
    - **`/tmp/argocd-tls/` cleaned.** The temporary CA cert directory no longer exists; the TLS cert lives in the `argocd-tls` Kubernetes secret.
    - **Wireguard added.** New §3.2.2 documents the VM↔Mac Mini Wireguard tunnel (`10.10.10.0/24`) for LLM traffic. Tunnel verified operational 2026-07-30: handshake established, 26-30ms latency, Ollama models reachable from VM at `10.10.10.2:11434`.
+8. **2026-07-31 — Deployment reconciled; HITE RAG path now live end-to-end.** First real-data deployment of the retrieval path, replacing placeholders throughout:
+   - **`/v1/query` wired to Qdrant and deployed.** Commit `10898a1` wired `clients::qdrant::search_sop` into the route handler and populated the collection. CI run #7 for that commit **built the image and passed smoke but never deployed**: the commit-back push failed because `main` had moved — Argo CD faithfully stayed on the old `1f34091`. Root cause: the workflow's `git push` after the auto-tag bump needed a `git pull --rebase` first. Fixed in `ci.yml` (see §3.1.1).
+   - **Embedding model baked into the image.** Query-time embedding failed in the air-gapped cluster (`Failed to retrieve model.onnx`) because fastembed can't download at runtime. The Dockerfile now runs `--download-only` at build time and ships the model under `EMBED_CACHE_DIR=/opt/fastembed` (env added to the Deployment). Deployed image is now `ghcr.io/merpatidove/qti-api-gateway:a0b4bec`.
+   - **api-gateway exposed on NodePort 30082** (was ClusterIP). Reachable at `http://100.106.122.68:30082` (worker-2 Tailscale IP) — unblocks Data Science E2E testing.
+   - **CI/CD hardened.** `ci.yml` gained `workflow_dispatch`, a `cargo check` step, an extended smoke test (`POST /v1/query` + `grep remediation_payload`), and the `git pull --rebase` commit-back fix. Runs #8/#9 green; tag auto-bump working again.
+   - **Qdrant populated.** `qti_knowledge_base` now holds **83 points** (18 SOPs, chunked) at 384-dim/Cosine — Data Engineering ingestion is done.
+   - **Promtail RBAC for `qti` confirmed.** `api-gateway` logs (namespace `qti`) reach Loki — row 6 of the §7 map is resolved.
+   - **Still open:** business metrics (`qti_*`) not yet instrumented; DS 5W1H schema mismatch with the API contract; `clients/inference.rs` design question; XOA hypervisor question (full-hosting §6).
 
 ---
 
@@ -62,7 +70,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 | `llm-inference/test_run.py` | Stable / Blocked | Ready to ping Rust API `/v1/query`. Blocked by cluster ingress configuration. |
 | `llm-inference/grade_result.py` | Active / 100% Stable | Locally executed. Successfully parses `evaluation_results.json` without `JSONDecodeError`. |
 | `evaluation_results.json` | Generated | Contains 55 synthetic test cases of placeholder Rust API responses. |
-| Rust API (`/v1/query`) | Deployed (Mocked) | K0s cluster target: port 8080. Currently returns static `ticket_metadata` payload. |
+| Rust API (`/v1/query`) | Deployed, live | NodePort 30082 on the K0s cluster. Returns real retrieved SOP data since 2026-07-31 (was a static `ticket_metadata` payload). |
 | Qdrant DB (`qti_knowledge_base`) | Deployed (Empty) | Internal target: `http://qdrant.qdrant.svc.cluster.local:6333` (Namespace: `qdrant`). 10GB NFS PV on Mac Mini host. |
 
 #### 1.2 Data scientist
@@ -91,7 +99,7 @@ The `grade_result.py` script enforces a hard, exact-match key check for the 5W1H
 
 ##### 1.3.3 Qdrant Database State
 
-The `qti_knowledge_base` collection is initialized with a 384-dim Cosine configuration and its status is Green, but currently contains **0 points**. The Rust backend route `clients::qdrant::search_sop` will return no actionable vectors until the Data Engineer runs the document ingestion pipeline.
+The `qti_knowledge_base` collection is initialized with a 384-dim Cosine configuration and its status is Green. **As of 2026-07-31 it holds 83 points** (18 SOPs, chunked) — the Data Engineer has run the document ingestion pipeline, so `clients::qdrant::search_sop` now returns actionable vectors. *(Written when the collection was empty at 0 points.)*
 
 ##### 1.3.4 Version Control Artifacts
 
@@ -100,12 +108,12 @@ All `__pycache__` artifacts and `.venv` environments have been actively purged a
 #### 1.4 What Needs to Be Done (TODOs)
 
 **Platform Engineering Unblocks**
-- [ ] Open K0s network route to expose Rust API (port 8080) to allow Data Science inference testing.
-- [ ] Open K0s network route to expose Qdrant (port 6333) to allow Data Engineering SOP ingestion.
+- [x] Open K0s network route to expose Rust API (port 8080) to allow Data Science inference testing. *(done 2026-07-31 — api-gateway now NodePort 30082, reachable at `http://100.106.122.68:30082`)*
+- [x] Open K0s network route to expose Qdrant (port 6333) to allow Data Engineering SOP ingestion. *(done — ingestion ran via SSH port-forward tunnel; Qdrant intentionally not exposed permanently, see §3.2.3)*
 
 **Data Engineering Unblocks**
-- [ ] Ingest the 18 SOPs from the RAG manual, generate embeddings, and populate the empty Qdrant vector database.
-- [ ] Wire the Rust backend (`/v1/query`) to actively call `clients::qdrant::search_sop` instead of returning the placeholder payload.
+- [x] Ingest the 18 SOPs from the RAG manual, generate embeddings, and populate the empty Qdrant vector database. *(done 2026-07-31 — `qti_knowledge_base` = 83 points, 384-dim/Cosine)*
+- [x] Wire the Rust backend (`/v1/query`) to actively call `clients::qdrant::search_sop` instead of returning the placeholder payload. *(done 2026-07-31 — commit `10898a1`, deployed as `a0b4bec`)*
 
 **Data Science (Johan)**
 - [ ] Run full 5W1H evaluation suite (`test_run.py` -> `grade_result.py`) against live vector data once the API backend is fully wired.
@@ -122,7 +130,7 @@ All `__pycache__` artifacts and `.venv` environments have been actively purged a
 # Navigate to the Data Science working directory
 cd llm-inference
 
-# Run the LLM inference generator (Requires Platform Engineering network unblock on Port 8080)
+# Run the LLM inference generator (api-gateway at http://100.106.122.68:30082 — override via QTI_API_URL, see test_run.py)
 python test_run.py
 
 # Grade the newly generated evaluation_results.json file against the strict 5W1H baseline
@@ -150,32 +158,32 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 
 | Component / File | Status | Access / Details |
 |---|---|---|
-| `api-gateway` Deployment (ns `qti`) | 1/1 Running, Healthy | `api-gateway.qti.svc:8080`. Image `ghcr.io/merpatidove/qti-api-gateway` — CI/CD report §3.1 records tag `e40ba85`; the modularized code (below) shipped at commit `1f34091` (Actions run #6, green). Confirm the live SHA at the Actions tab. |
+| `api-gateway` Deployment (ns `qti`) | 1/1 Running, Healthy | NodePort **30082** (was `api-gateway.qti.svc:8080`). Image `ghcr.io/merpatidove/qti-api-gateway:a0b4bec` (deployed 2026-07-31; live SHA verified at the Actions tab — CI/CD report §3.1). |
 | `api-gateway/src/main.rs` | Working, deployed | Orchestrator only (no business logic). Declares `mod models/routes/clients`, wires the router, exposes `/metrics`, binds `0.0.0.0:8080`. |
 | `api-gateway/src/models.rs` | Working, deployed | `QueryRequest`, `QueryResponse`, `TicketMetadata`, `RemediationPayload` (serde; matches `api_contract.md`). |
 | `api-gateway/src/routes/mod.rs` | Working, deployed | Module table of contents: `pub mod health; pub mod query;` |
 | `api-gateway/src/routes/health.rs` | Working, deployed | `GET /v1/health` → `{"status":"ok","version":"0.1.0"}`; counter `health_checks_total`. K8s liveness/readiness target. |
-| `api-gateway/src/routes/query.rs` | Working (**placeholder**), deployed | `POST /v1/query`. `Json(req): Json<QueryRequest>` validates the body (bad JSON → auto 422). Returns a **placeholder** `QueryResponse`; counter `queries_total`. |
+| `api-gateway/src/routes/query.rs` | Working, deployed | `POST /v1/query`. `Json(req): Json<QueryRequest>` validates the body (bad JSON → auto 422). Returns a real `QueryResponse` from `search_sop` since commit `10898a1` (2026-07-31; was placeholder); counter `queries_total`. |
 | `api-gateway/src/clients/mod.rs` | Working, deployed | Module table of contents: `pub mod qdrant;` |
-| `api-gateway/src/clients/qdrant.rs` | Written, compiled, **NOT wired** | `search_sop(Vec<f32>) -> Result<...>` via `reqwest` (REST, :6333). Constants `QDRANT_URL = http://qdrant.qdrant.svc.cluster.local:6333`, `COLLECTION_NAME = qti_knowledge_base`. Not yet called from `query.rs`. |
+| `api-gateway/src/clients/qdrant.rs` | Written, compiled, **WIRED + deployed** | `search_sop(Vec<f32>) -> Result<...>` via `reqwest` (REST, :6333). Constants `QDRANT_URL = http://qdrant.qdrant.svc.cluster.local:6333`, `COLLECTION_NAME = qti_knowledge_base`. Called from `query.rs` since commit `10898a1` (2026-07-31). |
 | `api-gateway/src/clients/inference.rs` | **NOT written** | Mac Mini inference client — possibly obsolete (see §2.3.6 / §2.4). |
 | `api-gateway/Cargo.toml` | Working | axum 0.8, tokio `[full]`, serde `[derive]`, serde_json, reqwest 0.12 `[rustls-tls, json]`, tracing, tracing-subscriber `[env-filter]`, prometheus 0.13 `[process]`, lazy_static 1.4, anyhow 1.0. |
 | `api-gateway/Dockerfile` | Working | Multi-stage `rust:1-bookworm` → `debian:bookworm-slim`; image ~32 MB. |
-| `api-gateway/k8s/deployment.yaml` | Working | Liveness + readiness probes on `/v1/health`. |
-| `api-gateway/k8s/service.yaml` | Working | ClusterIP on 8080. |
+| `api-gateway/k8s/deployment.yaml` | Working | Liveness + readiness probes on `/v1/health`; `EMBED_CACHE_DIR=/opt/fastembed` env (2026-07-31, model baked into image). |
+| `api-gateway/k8s/service.yaml` | Working | NodePort 30082 (was ClusterIP on 8080; changed 2026-07-31). |
 | `api-gateway/k8s/kustomization.yaml` | Working | `newTag: <sha>` managed by CI commit-back. |
 | `api-gateway/k8s/servicemonitor.yaml` | Working | Prometheus scrapes `/metrics` every 15s. |
-| `data-pipeline/src/main.rs` | Working (**parser only**), **NOT deployed** | Reads `RAG_Manual.md`, splits on `"\n# SOP-"`, prints all 18 SOPs (id + title). Chunk → embed → upsert **not written**. |
+| `data-pipeline/src/main.rs` | Working (**parser only**), **NOT deployed** | Reads `RAG_Manual.md`, splits on `"\n# SOP-"`, prints all 18 SOPs (id + title). Chunk → embed → upsert **not written in this crate** — the collection was nonetheless populated to 83 points on 2026-07-31 (ingestion path per §2.4); parser crate remains local-only. |
 | `data-pipeline/Cargo.toml` | Working | Parser uses std only; staged for next step: `fastembed`, `qdrant-client`, `uuid`, `serde`, `serde_json`, `anyhow`, `tokio`. |
 | `data-pipeline/RAG_Manual.md` | Present (data) | 18 structured SOPs — the ingestion source. |
 | `data-pipeline/golden_datasets.json` | Present (data) | Sample tickets — DS evaluation harness; **not** consumed by the Rust code yet. |
-| Collection `qti_knowledge_base` | Created, **green, 0 points** | **384-dim / Cosine** (NOT 1024 — see §2.3.1). Created by DevOps per my spec; empty until I run ingestion. |
+| Collection `qti_knowledge_base` | Created, **green, 83 points** | **384-dim / Cosine** (NOT 1024 — see §2.3.1). 18 SOPs ingested + chunked on 2026-07-31 (commit `10898a1`). |
 | Gateway → Qdrant | Reachable (in-cluster) | REST `http://qdrant.qdrant.svc.cluster.local:6333`. |
-| Pipeline → Qdrant | **NOT reachable yet** | Needs an external path (gRPC :6334 by default) — see §2.3.3 / §2.4. |
+| Pipeline → Qdrant | **Reachable (via SSH port-forward / tunnel)** | Ingestion ran over the tunnel path on 2026-07-31; Qdrant stays internal by design (no permanent NodePort exposure). |
 | `.gitignore` (repo root) | Added | `target/`, `*.pdb`, `*.exe`. |
 | `rag-service/` | **DELETED** from repo | DevOps CI/CD report §3.1.2/§3.1.3 (see §3 below) still describe it — stale, see §2.3.5. |
 
-**Expected placeholder response from `/v1/query`** (so testers don't file a bug):
+**Expected placeholder response from `/v1/query`** (so testers don't file a bug — *historical as of 2026-07-31, when the route was wired to Qdrant and now returns real retrieved SOP text*):
 
 ```json
 {"ticket_metadata":{"ticket_id":"","classification":"placeholder_classification"},"remediation_payload":{"proposed_fix":"Rust backend is not yet connected to Qdrant.","requires_type_check":false}}
@@ -189,7 +197,7 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 - **Steps:** GitHub Actions builds the Docker image (Rust multi-stage) → pushes `ghcr.io/merpatidove/qti-api-gateway:<sha>` → Docker smoke test (`/v1/health` must return 200) → commits the new image tag to `kustomization.yaml` with `[skip ci]` → Argo CD auto-syncs → pod restarts, health check passes.
 - **Concurrency gate:** enabled — only the latest push builds; older in-progress runs are cancelled.
 - **Rollback:** manual via `.github/workflows/rollback.yml` (specify a previous image SHA/tag).
-- **Last runs:** modularization build = Actions run #6, ~2m47s, green; image ~32 MB; Argo deploy ~8s. DevOps CI/CD report §3.1 records latest tag `e40ba85` — verify the current SHA at https://github.com/Merpatidove/QTI-MAGANG/actions.
+- **Last runs:** modularization build = Actions run #6, ~2m47s, green; image ~32 MB; Argo deploy ~8s. 2026-07-31: run #7 (tag `10898a1`) built + passed smoke but the commit-back push failed on a moved `main` — fixed with `git pull --rebase`; runs #8/#9 green, latest tag `a0b4bec` (embedding model baked into image).
 
 **`data-pipeline` — no CI/CD.** Local-only script today. A Dockerfile / workflow / CronJob is a long-term TODO (DevOps CI/CD report §3.4.3). Note: that report §3.4.3 mislabels this as the "Python scraping pipeline" — it is **Rust** (see §2.3.5).
 
@@ -254,17 +262,17 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 
 - [x] Modularize `api-gateway` (`models.rs`, `routes/health.rs`, `routes/query.rs`, `clients/qdrant.rs`, rewired `main.rs`).
 - [x] `/v1/health` live and passing the CI smoke test.
-- [x] `/v1/query` accepts + validates JSON (placeholder response).
+- [x] `/v1/query` accepts + validates JSON (placeholder → **real data 2026-07-31**, returns retrieved SOP text).
 - [x] `clients/qdrant.rs::search_sop` written and compiling.
 - [x] Root `.gitignore` added; `rag-service/` removed from the repo.
 - [x] `data-pipeline` parser isolates all 18 SOPs.
 - [x] `qti_knowledge_base` collection created at 384 / Cosine (via DevOps, per my spec).
 
-**My lane — pending (the real remaining work)**
+**My lane — done 2026-07-31; remaining work below**
 
-- [ ] **Reachable Qdrant path for `data-pipeline`** — get the external address/port (Mac Mini / Tailscale `100.79.30.90`, port-forward, or NodePort) from DevOps. *Currently the blocker.*
-- [ ] **Populate the collection** — finish `data-pipeline`: chunk → embed with `all-MiniLM-L6-v2` (384-dim) → upsert with UUID-v4 point IDs and payload `{text, sop_id, title, category, tier}`. Turns 0 points into the 18 SOPs.
-- [ ] **Wire `/v1/query`** to call `clients::qdrant::search_sop` so it returns real SOP text instead of the placeholder.
+- [x] **Reachable Qdrant path for `data-pipeline`** — resolved via SSH port-forward tunnel (Qdrant stays internal by design); ingestion completed. *Previously the blocker.*
+- [x] **Populate the collection** — done 2026-07-31: chunk → embed `all-MiniLM-L6-v2` (384-dim) → upsert UUID-v4 point IDs with payload `{text, sop_id, title, category, tier}`. `qti_knowledge_base` = **83 points**.
+- [x] **Wire `/v1/query`** to call `clients::qdrant::search_sop` — done (commit `10898a1`); verified live returning real SOP text.
 - [ ] **Confirm `clients/inference.rs`** is needed; if the gateway is retrieval-only (§2.3.6), do not build it.
 - [ ] Move hardcoded `QDRANT_URL` to an env var once DevOps mounts the `QDRANT_URL` Secret (§2.3.9).
 
@@ -325,7 +333,7 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 
 ### QTI RAG Pipeline — CI/CD, Argo CD & Cluster Infrastructure Report
 
-**Date:** 2026-07-17 (Updated 2026-07-30 — ServiceMonitors, Argo CD TLS, Tailscale access documented)
+**Date:** 2026-07-17 (Updated 2026-07-30 — ServiceMonitors, Argo CD TLS, Tailscale access documented; Updated 2026-07-31 — `/v1/query` wired, NodePort 30082, model baked into image)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -337,7 +345,7 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 |---|---|---|
 | **Argo CD** | 7/7 pods Running | `https://argocd.hite.local` (admin / `12qwaszx`) |
 | **Qdrant** | 1/1 Running | `qdrant.qdrant.svc.cluster.local:6333`, NFS-backed PVC (10Gi) |
-| **api-gateway** | 1/1 Running, Healthy | `api-gateway.qti.svc:8080` — returns `{"status":"ok","version":"0.1.0"}` |
+| **api-gateway** | 1/1 Running, Healthy | NodePort **30082** — `http://100.106.122.68:30082/v1/health` returns `{"status":"ok"}`; `POST /v1/query` returns real SOP data. (Was ClusterIP `api-gateway.qti.svc:8080`.) |
 | **NFS CSI driver** | 3/3 controller, 2/2 node pods | k0s path: `/var/lib/k0s/kubelet` |
 | **Ingress-NGINX** | 1/1 Running (LoadBalancer) | NodePort 31084 (HTTP), 30616 (HTTPS) — routes to Grafana, Prometheus, AlertManager, ArgoCD. *(Grafana/Prometheus/AlertManager themselves are Jep's — see §4.)* |
 | **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
@@ -349,31 +357,34 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 
 ```
 Push to main (api-gateway/**)
-  -> GitHub Actions builds Docker image (Rust multi-stage)
+  -> GitHub Actions builds Docker image (Rust multi-stage + fastembed model baked via --download-only)
+  -> cargo check (added 2026-07-31)
   -> Pushes to ghcr.io/merpatidove/qti-api-gateway:<git-sha>
-  -> Docker smoke test: /v1/health must return 200
-  -> Commits updated image tag to kustomization.yaml [skip ci]
+  -> Docker smoke test: /v1/health must return 200; POST /v1/query must return remediation_payload (extended 2026-07-31)
+  -> git pull --rebase then commit updated image tag to kustomization.yaml [skip ci] (fix for run #7, see below)
   -> Argo CD auto-syncs to cluster
   -> Pod restarts with new image, health check passes
 ```
 
 - **Concurrency gate:** enabled — only the latest push builds (old in-progress runs are cancelled).
 - **Rollback:** manual via `rollback.yml` — specify a previous image SHA/tag to revert instantly.
+- **Known failure (2026-07-31):** CI run #7 built the image and passed smoke for commit `10898a1` but **never deployed** — the commit-back push failed because `main` had moved mid-run, so Argo CD stayed on old tag `1f34091`. Fixed with `git pull --rebase` before the tag commit-back. Runs #8/#9 green.
+- **Manual trigger:** `workflow_dispatch` added 2026-07-31 (was push-only).
 
-**Last successful run:** Image `ghcr.io/merpatidove/qti-api-gateway:e40ba85`, 32MB, deployed in ~8s.
+**Last successful run:** Image `ghcr.io/merpatidove/qti-api-gateway:a0b4bec` (bakes `all-MiniLM-L6-v2` under `/opt/fastembed`), deployed 2026-07-31; health check passing at NodePort 30082.
 
 ##### 3.1.2 Files Created in QTI-MAGANG Repo
 
 | File | Purpose | Status |
 |---|---|---|
-| `api-gateway/Dockerfile` | Multi-stage Rust build (rust:1-bookworm → debian:bookworm-slim) | Working |
+| `api-gateway/Dockerfile` | Multi-stage Rust build (rust:1-bookworm → debian:bookworm-slim); runs `--download-only` to bake `all-MiniLM-L6-v2` into `/opt/fastembed` (2026-07-31, air-gapped cluster can't fetch at runtime) | Working |
 | `api-gateway/Cargo.toml` | Dependencies: axum 0.8, tokio, serde, reqwest (rustls-tls), prometheus | Working |
 | `api-gateway/src/main.rs` | `/v1/health`, `/v1/query`, `/metrics` endpoints with Prometheus counters | Working |
 | `api-gateway/k8s/deployment.yaml` | Deployment with liveness/readiness on `/v1/health` | Working |
-| `api-gateway/k8s/service.yaml` | ClusterIP on port 8080 | Working |
+| `api-gateway/k8s/service.yaml` | **NodePort 30082** (was ClusterIP 8080; changed 2026-07-31) | Working |
 | `api-gateway/k8s/kustomization.yaml` | Image tag managed by CI (`newTag: <sha>`) | Working |
 | `api-gateway/k8s/servicemonitor.yaml` | Prometheus ServiceMonitor, scrapes `/metrics` every 15s | Working |
-| `.github/workflows/ci.yml` | Build → push → smoke test → commit-back (with concurrency gate) | Working |
+| `.github/workflows/ci.yml` | Build → `cargo check` → push → smoke (`/v1/health` + `POST /v1/query`) → commit-back via `git pull --rebase` (concurrency gate, `workflow_dispatch`) | Working |
 | `.github/workflows/rollback.yml` | Manual rollback to any previous image tag/SHA | Working |
 | `rag-service/Cargo.toml` | RAG inference service (axum 0.7, tokio, serde) | Scaffold |
 | `rag-service/src/main.rs` | Axum server on port 3000, `POST /api/v1/ticket` | Scaffold |
@@ -602,21 +613,21 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
 
 ##### 3.4.1 For the Dev Teams (Unblocks Real Functionality)
 
-- [x] **api-gateway skeleton** — `/v1/health`, `/v1/query`, `/metrics` endpoints implemented. Query is placeholder only.
+- [x] **api-gateway skeleton** — `/v1/health`, `/v1/query`, `/metrics` endpoints implemented. Query returned placeholder initially; **returns real retrieved SOP text since 2026-07-31** (commit `10898a1`, deployed `a0b4bec`).
 - [x] **rag-service scaffold** — `POST /api/v1/ticket` accepts JSON, returns dummy response. No Qdrant/Mistral integration.
-- [ ] **Write actual Rust source code** — teams need to implement: *(per Data Engineering §2.3.5 above, `models.rs`/`routes/query.rs`/`clients/qdrant.rs` are actually already done — only `clients/inference.rs` remains, and may be unnecessary — see §2.3.6)*
+- [x] **Write actual Rust source code** — *(per Data Engineering §2.3.5 above)*: `models.rs`, `routes/query.rs`, `clients/qdrant.rs` are **written, wired, and deployed** (2026-07-31). Only `clients/inference.rs` remains, and may be unnecessary — see §2.3.6.
   - `routes/query.rs` — POST /v1/query handler, Qdrant query, inference forward
   - `clients/qdrant.rs` — Qdrant HTTP client
   - `clients/inference.rs` — Mac Mini inference client
   - `models.rs` — matching `api_contract.md`
-- [ ] **Create `qti_knowledge_base` collection** in Qdrant: *(per Data Engineering §2.3.1 above, use size 384, NOT 1024 — the `curl` below is stale)*
+- [x] **Create `qti_knowledge_base` collection** in Qdrant — **done** (size 384, Cosine; now holds **83 points** after 2026-07-31 ingestion). The curl below is historical (note the size is already corrected to 384):
   ```bash
   kubectl port-forward -n qdrant svc/qdrant 6333:6333
   curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
     -H 'Content-Type: application/json' \
-    -d '{"vectors": {"size": 1024, "distance": "Cosine"}}'
+    -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
   ```
-- [ ] **Set up the Mac Mini inference server** — the pipeline expects it at `INFERENCE_URL`. No server = `/v1/query` will error.
+- [x] **Set up the Mac Mini inference server** — Ollama live via WireGuard tunnel (§3.2.2). The gateway is retrieval-only (§2.3.6) so it does not consume `INFERENCE_URL`; the Python agent calls Ollama directly.
 - [ ] **Add secrets** — `QDRANT_URL`, `INFERENCE_URL`, and any API keys should be Kubernetes Secrets, not hardcoded in the Deployment.
 - [ ] **Add `.gitignore`** — *(done — see Data Engineering §2.3.5)* `rag-service/target/` build artifacts are committed to the repo. Need to exclude `target/`, `*.pdb`, etc.
 
@@ -1049,18 +1060,18 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 
 ## §7. Cross-Role Dependency & Blocker Map (NEW)
 
-> Synthesized from the TODO/gotcha sections of all five reports — shows who's currently blocked on whom.
+> Synthesized from the TODO/gotcha sections of all five reports — shows who's currently blocked on whom. Status column reconciled against live machine 2026-07-31.
 
-| Blocked | Blocked on | Because |
-|---|---|---|
-| Data Science E2E testing (§1.4) | Platform Engineering (Hilmi) | Rust API (port 8080) and Qdrant (port 6333) need a K0s network route (NodePort/LoadBalancer/kubeconfig RBAC) — see §1.3.1. |
-| Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. |
-| `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. |
-| DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) | "Blocked total" per §4.4, Phase 8 — same root cause as the two rows above. |
-| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. |
-| Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. |
-| Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. |
-| `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | May be entirely unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. |
+| Blocked | Blocked on | Because | Status (2026-07-31) |
+|---|---|---|---|
+| Data Science E2E testing (§1.4) | Platform Engineering (Hilmi) | Rust API (port 8080) and Qdrant (port 6333) need a K0s network route (NodePort/LoadBalancer/kubeconfig RBAC) — see §1.3.1. | ✅ **Resolved** — api-gateway on NodePort 30082 (`http://100.106.122.68:30082`). Qdrant kept internal; DS E2E runs against the gateway. |
+| Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved** — ingestion ran via SSH port-forward tunnel; `qti_knowledge_base` = **83 points**. |
+| `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
+| DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) | "Blocked total" per §4.4, Phase 8 — same root cause as the two rows above. | ⏳ **Partial** — Mac Mini reachable via WireGuard (§3.2.2), so the infra blocker is gone; pipeline-monitoring work (Loki logs + metrics) still in progress. |
+| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ **Open** — `qti_*` business metrics still not instrumented; `/metrics` currently exposes only `health_checks_total`, `queries_total`, `http_requests_total`. |
+| Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
+| Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
+| `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | May be entirely unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ⏳ **Open** — gateway deployed retrieval-only; file never built. |
 
 ---
 
