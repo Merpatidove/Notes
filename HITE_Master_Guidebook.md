@@ -858,9 +858,9 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
 | **Phase 5** | Konfigurasi Production | ⚠️ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki belum diatur*. |
 | **Phase 6** | Dashboard | ⚠️ | Node Exporter & K8s Monitoring siap. *Dashboard bisnis HITE blocked (nunggu Farrel)*. |
-| **Phase 7** | Alert Rules | ⚠️ | 12 alert infra + 1 log-based alert aktif. *Alert `HITE_ApiGatewayDown` & alert bisnis belum*. |
+| **Phase 7** | Alert Rules | ⚠️ | 13 alert infra + 1 log-based alert aktif. *Alert bisnis belum (menunggu instrumentasi Farrel).*. |
 | **Phase 8** | Monitoring AI Pipeline | ❌ | Belum mulai. Blocked total oleh masalah routing network Mac Mini. |
-| **Phase 9** | Testing | 🔴 | Testing infra E2E selesai. *Isu aktif: Log `api-gateway` (namespace `qti`) belum masuk Loki (dugaan RBAC)*. |
+| **Phase 9** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
 | **Phase 10** | Production Checklist | ❌ | Belum dimulai, menunggu Phase 8-9 tuntas. |
 | **Phase 11** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
 
@@ -885,7 +885,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 ### 3. Application Layer
 
 - [x] **Qdrant**: Lengkap (ServiceMonitor + Alerting)
-- [⚠️] **Rust API (`api-gateway`)**: Metric infra ✅, log ❌ (sedang debug RBAC), alert Down ⬜
+- [✅] **Rust API (`api-gateway`)**: Metric infra ✅, log ✅), alert Down ✅
 - [❌] **Mac Mini / Inference / LLM**: Belum tersentuh sama sekali
 
 ### 4. Business Metrics
@@ -1068,7 +1068,7 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved** — ingestion ran via SSH port-forward tunnel; `qti_knowledge_base` = **83 points**. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
 | DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) | "Blocked total" per §4.4, Phase 8 — same root cause as the two rows above. | ⏳ **Partial** — Mac Mini reachable via WireGuard (§3.2.2), so the infra blocker is gone; pipeline-monitoring work (Loki logs + metrics) still in progress. |
-| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ **Open** — `qti_*` business metrics still not instrumented; `/metrics` currently exposes only `health_checks_total`, `queries_total`, `http_requests_total`. |
+| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ **Open / Blocked on Farrel** — `qti_*` business metrics still not instrumented; `/metrics` currently exposes only `health_checks_total`, `queries_total`, `http_requests_total`. |
 | Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
 | `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | May be entirely unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ⏳ **Open** — gateway deployed retrieval-only; file never built. |
