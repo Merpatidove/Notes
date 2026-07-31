@@ -874,7 +874,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 1** | Audit Infrastruktur | ✅ | Hostname, timezone, swap, firewall, kernel modules, containerd, CoreDNS, storage class (`nfs-csi`) sehat. |
 | **Phase 2** | Diagram Arsitektur | ⏭️ | Dilewati atas kesepakatan, tidak menghalangi progress. |
 | **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
-| **Phase 5** | Konfigurasi Production | ⚠️ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki belum diatur*. |
+| **Phase 5** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
 | **Phase 6** | Dashboard | ⚠️ | Node Exporter & K8s Monitoring siap. *Dashboard bisnis HITE blocked (nunggu Farrel)*. |
 | **Phase 7** | Alert Rules | ⚠️ | 13 alert infra + 1 log-based alert aktif. *Alert bisnis belum (menunggu instrumentasi Farrel).*. |
 | **Phase 8** | Monitoring AI Pipeline | ❌ | Belum mulai. Blocked total oleh masalah routing network Mac Mini. |
