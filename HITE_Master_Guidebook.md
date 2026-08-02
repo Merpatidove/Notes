@@ -1,7 +1,7 @@
 # HITE — Master Infrastructure Guidebook
 
 **Project:** Hybrid IT Triage Engine (HITE) — QTI-MAGANG
-**Compiled:** 2026-07-30 (state reconciled against live machine 2026-07-31)
+**Compiled:** 2026-07-30 (state reconciled against live machine 2026-07-31; DS E2E baseline reconciled 2026-08-02)
 **Compiled by:** Johan (merged from 5 individual role reports, unedited content preserved below)
 
 **Roles:**
@@ -49,6 +49,16 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - **Image size note corrected** — the "~32 MB" figure predates baking `all-MiniLM-L6-v2` into the image (`a0b4bec` is larger).
    - **`/metrics` correction** — `http_requests_total` is registered but never incremented, so it does not appear in the exported metrics; only `health_checks_total` and `queries_total` are live.
    - **Live check 2026-07-31:** `GET http://100.106.122.68:30082/v1/health` → `{"status":"ok","version":"0.1.0"}`.
+10. **2026-08-02 — Data Science evaluation pipeline runs end-to-end on real data; first measured baseline.** The DS lane moved from "harness that pings endpoints" to "a pipeline that produces a graded 5W1H triage," reconciled against the live cluster + Mac Mini Ollama on 2026-08-02:
+    - Gateway reachable from a Tailscale laptop with NO port-forward: `GET http://100.106.122.68:30082/v1/health` → `{"status":"ok","version":"0.1.0"}`; `POST /v1/query` returns `classification: "retrieved"` with real SOP text (e.g. "nginx bind failed" → SOP-DOC-002; TKT-1001 → SOP-DB-001). Retrieval is content-driven.
+    - Gateway response carries NO 5W1H keys — it is `{ticket_metadata, remediation_payload}`. The 5W1H schema mismatch with the API contract (flagged open since 2026-07-31) is now PROVEN on live data, not guessed: the 5W1H object lives in the DS agent's output, not the gateway response.
+    - Ollama is NOT reachable from a Tailscale laptop directly (`100.79.30.90:11434` and worker-1 `100.68.225.41:11434` both refused — Ollama binds to the WireGuard interface `10.10.10.2` only, §3.2.2). The working door is an SSH local-forward through the controller, after an ED25519 key was generated (`ssh-keygen -t ed25519 -C "johan-hite"`) and added to `ferdi`'s `authorized_keys`:
+      `ssh -L 11434:10.10.10.2:11434 ferdi@100.94.99.125` → `curl http://localhost:11434/api/tags` returns the model list (all-minilm 384-dim, Qwen2.5-Coder-7B-Instruct Q4_K_M, Ornith-1.0-9B Q4_K_M, llama3 Q4_0).
+    - The real generation brain is `agent.py` (a FastAPI ReAct orchestrator on :8000, `/process-ticket`), NOT the gateway-direct path. The gateway-direct runs of 2026-07-31 were the retrieval diagnostic; the agent is the retrieval+generation join. Five fixes landed in `llm-inference/`: (A) `grade_result.py` reads `5w1h_output` (was the never-written `output` key — the root cause of the eternal 0%); (B) `test_run.py` points at the agent `/process-ticket` and extracts the flat 6-key dict; (C) `agent.py` Ollama URL → `127.0.0.1:11434` (was the dead `192.168.100.35`), timeout 45→300; (D) `tools.search_sop` → live gateway NodePort 30082 `/v1/query` (was the deleted `rag-service:8000`); (E) `agent.py` synthesis prompt now demands the exact six keys. `prompts.py` unchanged (already correct).
+    - First real-data baseline (2026-08-02, 55 tickets): Valid JSON 55/55 (100%); Complete 5W1H Schema 55/55 (100%); Grounded (how ≠ "Pending SOP search") 24/55 (43.6%). `grade_result.py` now reports schema AND grounding as two metrics from one file. See §1.6.
+    - Architecture locked (joint DS+DE decision 2026-08-02): do NOT build `clients/inference.rs`; gateway stays retrieval-only; generation lives in the DS agent. §7 row 8 → Resolved; §2.4 TODO → done; §2.3.6 / §2.3.12 / §3.4.1 annotated; the dead `INFERENCE_URL` Deployment env is confirmed for removal.
+    - Still open (DS): raise grounding above 43.6% (synthesis-gate fix — *proposed, not yet applied*); methodology doc; business-metric/tier spec doc; agent-side observability hooks; `grade_result.py` into CI. The error→eval feedback loop (Loki → golden_datasets curator) is **PROPOSED only, not built**.
+    - **Repo-state note (crosscheck 2026-08-02):** the five `llm-inference/` fixes (A–E) and the 55-ticket 100%/43.6% baseline were produced on Johan's laptop and are **NOT yet committed** to `Merpatidove/QTI-MAGANG`. The committed repo still has Fixes A–E unapplied (`grade_result.py` reads `output`; `test_run.py` → gateway `/v1/query`; `agent.py` → `192.168.100.35:11434`, timeout 45; `tools.search_sop` → deleted `rag-service:8000`) and its `evaluation_results.json` holds placeholder gateway responses (grades 0% schema, not 100%). §1.1 / §1.2 / §1.5 / §1.6 reflect the laptop state; re-crosscheck after the laptop code is committed.
 
 ---
 
@@ -73,24 +83,31 @@ Nothing from the original five source files was deleted. Every table, checklist,
 #### 1.1 What's Running / Current State
 
 | Component / File | Status | Access / Details |
-| :--- | :--- | :--- |
-| `llm-inference/test_run.py` | Stable / Blocked | Ready to ping Rust API `/v1/query`. Blocked by cluster ingress configuration. |
-| `llm-inference/grade_result.py` | Active / 100% Stable | Locally executed. Successfully parses `evaluation_results.json` without `JSONDecodeError`. |
-| `evaluation_results.json` | Generated | Contains 55 synthetic test cases of placeholder Rust API responses. |
-| Rust API (`/v1/query`) | Deployed, live | NodePort 30082 on the K0s cluster. Returns real retrieved SOP data since 2026-07-31 (was a static `ticket_metadata` payload). |
-| Qdrant DB (`qti_knowledge_base`) | Deployed (Empty) | Internal target: `http://qdrant.qdrant.svc.cluster.local:6333` (Namespace: `qdrant`). 10GB NFS PV on Mac Mini host. |
+| --- | --- | --- |
+| llm-inference/agent.py | Active / generation brain | FastAPI ReAct orchestrator on :8000 (`POST /process-ticket`). Calls Ollama (Qwen2.5-Coder-7B-Instruct Q4_K_M) over the SSH tunnel (§1.3.7) for the 5W1H + tool choice; calls the gateway `/v1/query` via `tools.search_sop` for RAG context; synthesis phase grounds `why`/`how` in the retrieved SOP. Ollama URL env-driven (`OLLAMA_URL`, default `http://127.0.0.1:11434`). |
+| llm-inference/test_run.py | Active / unblocked | POSTs each ticket to the **agent** `/process-ticket` (`AGENT_URL`, default `http://127.0.0.1:8000`) and extracts the flat 6-key 5W1H dict. No longer points at the gateway directly — that path was the 2026-07-31 retrieval diagnostic only. |
+| llm-inference/grade_result.py | Active / two metrics | Reads `5w1h_output` (Fix A — was the never-written `output` key, the root cause of the eternal 0%). Reports **two** metrics: Complete 5W1H Schema (six keys present) and Grounded (`how` ≠ the `Pending SOP search` placeholder, constant `PLACEHOLDER_HOW`). Single source of truth for both definitions (handed to Ferdi for CI). |
+| llm-inference/prompts.py | Stable | `REACT_SYSTEM_PROMPT` defines the six lowercase keys + tool-selection directives; proven to elicit the shape. |
+| llm-inference/tools.py | Active / fixed | `search_sop` hits the live gateway NodePort 30082 `/v1/query` (was the deleted `rag-service:8000`). `execute_safe_cli` sandbox not deployed — non-critical; the agent catches the error and falls back to the analysis-phase 5W1H (still six keys). |
+| evaluation_results.json | Generated (real) | 55 **real agent** 5W1H triages (2026-08-02), not placeholders: 100% schema-complete, 43.6% grounded. |
+| Rust API ( /v1/query ) | Deployed, live / retrieval-only | NodePort 30082. Returns retrieved SOP text in `remediation_payload.proposed_fix` (no 5W1H). Reached directly over Tailscale for the retrieval diagnostic; reached by the agent's `search_sop` for RAG context. |
+| Qdrant DB ( qti_knowledge_base ) | Deployed, 83 points | 384-dim / Cosine, 18 SOPs chunked. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
+
+> **Repo note (2026-08-02 crosscheck):** rows above describe the laptop state — the five `llm-inference/` fixes and the real 55-ticket baseline are NOT yet committed to `QTI-MAGANG` (see §0 item 10).
 
 #### 1.2 Data scientist
 
 The Data Science evaluation pipeline is currently executed manually to evaluate LLM inference outputs against a strict 5W1H (Who, What, When, Where, Why, How) schema.
 
 - **Triggers:** Manual execution via `python test_run.py` to generate inference outputs, followed by `python grade_result.py` for parsing and validation.
-- **Steps:**
-  1. Ping Rust API backend to retrieve RAG-augmented LLM responses.
-  2. Write raw responses to local `evaluation_results.json`.
-  3. Parse JSON to validate structural integrity and confirm existence of all required 5W1H keys.
-  4. Calculate baseline percentage scores.
-- **Last Successful Run:** Ran against 55 test cases locally. Achieved 100% Valid JSON Responses rate. Schema completeness is at 0% explicitly because the live backend is serving a mock schema (`ticket_metadata`, `remediation_payload`) while awaiting Data Engineering vector population.
+- **Steps (2026-08-02 pipeline):**
+  1. `test_run.py` POSTs each ticket to the agent `/process-ticket`.
+  2. The agent runs a ReAct loop: Ollama produces a 5W1H analysis + tool choice; if `search_sop` is chosen, the agent retrieves RAG context from the gateway `/v1/query`; a synthesis call grounds `why`/`how` in it.
+  3. `test_run.py` stores the flat six-key 5W1H dict under `5w1h_output` in `evaluation_results.json`.
+  4. `grade_result.py` reports schema completeness AND grounding.
+- **Last Successful Run (2026-08-02):** full agent pipeline over 55 tickets — Valid JSON 55/55 (100%); Complete 5W1H Schema 55/55 (100%); **Grounded 24/55 (43.6%)**. This is the first run where the schema score is measured on real generated data (it was 0% on placeholders and on the wrong key before Fix A). The 43.6% is the first measurement of RAG grounding in the project. (The 2026-07-31 gateway-direct run that returned `ticket_metadata`/`remediation_payload` was the retrieval diagnostic, not the grading target.)
+
+> **Repo note (2026-08-02 crosscheck):** steps + run above describe the laptop state, NOT yet committed to `QTI-MAGANG` (see §0 item 10).
 
 #### 1.3 Notable Observations & "Gotchas"
 
@@ -99,6 +116,8 @@ The Data Science evaluation pipeline is currently executed manually to evaluate 
 Our K0s cluster does not expose internal services externally by default. Because the Mac Mini is hosting the cluster, local development environments cannot reach the internal DNS (`qdrant.qdrant.svc.cluster.local`) or the Rust API pod without an explicit ingress route. Platform Engineering must establish a NodePort, LoadBalancer, or issue `kubeconfig` RBACs for `kubectl port-forward` before Data Science E2E testing or Data Engineer DB population can proceed.
 
 > **Cross-reference note:** this line says "the Mac Mini is hosting the cluster" — worth reconciling against Platform Engineering §5 (the k0s controller/workers are separate VM IPs `10.20.20.201/202/200`) and DevOps CI/CD §3.3.2 ("this VM is a single point of failure"). See §6 below for the consolidated Mac Mini picture and this exact discrepancy.
+
+**Update 2026-08-02 (DS unblocked):** the Rust API route no longer needs a port-forward for DS — api-gateway is on NodePort 30082, reachable directly over Tailscale at `http://100.106.122.68:30082`. The remaining network door DS needs is Ollama, which is reached via the SSH local-forward in §1.3.7 (not a Platform Eng NodePort). The "Platform Engineering must establish a route" sentence above is therefore resolved for DS E2E; it remains accurate as historical context and for any component that still needs cluster-internal DNS.
 
 ##### 1.3.2 Evaluation Schema Strictness
 
@@ -112,6 +131,31 @@ The `qti_knowledge_base` collection is initialized with a 384-dim Cosine configu
 
 All `__pycache__` artifacts and `.venv` environments have been actively purged and added to `.gitignore`. Never commit these files as they bloat the inference repository and trigger CI pipeline caching issues.
 
+##### 1.3.5 Architecture locked — gateway is retrieval-only (decided 2026-08-02)
+
+Joint DS+DE decision: the Rust api-gateway does retrieval only (returns the retrieved SOP text in `remediation_payload.proposed_fix`); it never calls Ollama and never generates the 5W1H. Generation is the DS Python agent's job (`agent.py`), which calls Ollama over the SSH tunnel (§1.3.7) and uses the gateway only for RAG context. Consequences already reflected elsewhere: `clients/inference.rs` is intentionally never built (§2.3.6 / §7 row 8); the 5W1H object lives in the agent's output, not the gateway response (so `grade_result.py` reads `5w1h_output` from the agent, not `/v1/query`); the `INFERENCE_URL` Deployment env is dead (§2.3.12). Recorded so the design is not re-opened by a future reader.
+
+##### 1.3.6 Schema completeness vs grounding — two metrics, one grader
+
+`grade_result.py` now reports two independent numbers, on purpose, because they measure different things and conflating them hid the real state for weeks:
+- **Complete 5W1H Schema** = are all six keys (`Who/What/When/Where/Why/How`, matched case-insensitively via `.capitalize()`) present and non-empty? Measures *shape*.
+- **Grounded** = is `how` backed by a real retrieved SOP, i.e. NOT the prompt's placeholder example `"Pending SOP search"` (constant `PLACEHOLDER_HOW`)? Measures *whether the RAG half of RAG reached the answer*. A schema-complete triage can still be ungrounded (the model filled the form from the ticket alone).
+Both definitions live in this one file so they cannot drift (the same drift that produced the old never-written `output` key). The Tier mapping derived from them: **Tier A** = schema-complete AND grounded; **Tier B** = complete but ungrounded; **Tier C** = schema-incomplete / escape-hatch. On 2026-08-02: A = 24, B = 31, C = 0. Hand this file (not a copy of the logic) to Ferdi for CI (§1.4).
+Caveat: the grounding check is naive — an escape-hatch string like `"no matching SOP"` would be mis-counted as grounded because it lacks the placeholder substring. Revisit the `PLACEHOLDER_HOW` list from the real distribution before treating 43.6% as exact.
+
+> **Repo note (2026-08-02 crosscheck):** this two-metric grader is laptop-side, NOT yet committed to `QTI-MAGANG` (see §0 item 10).
+
+##### 1.3.7 Ollama reachability from a Tailscale laptop — the SSH-tunnel door
+
+Ollama on the Mac Mini binds to the WireGuard interface only (`OLLAMA_HOST=10.10.10.2:11434`, §3.2.2); on the Mac Mini's Tailscale interface nothing listens on 11434. A Windows laptop on Tailscale therefore CANNOT reach Ollama directly — `curl http://100.79.30.90:11434` and worker-1 `http://100.68.225.41:11434` both refuse. The working door is a local-forward through the controller (which is on the WireGuard subnet at 10.10.10.1):
+
+```bash
+ssh -L 11434:10.10.10.2:11434 ferdi@100.94.99.125     # leave this session OPEN; it IS the tunnel
+curl http://localhost:11434/api/tags                    # expect the model list
+```
+
+Auth is key-only (§3.3.2): the laptop needs an ED25519 key in `ferdi`'s `~/.ssh/authorized_keys` (`ssh-keygen -t ed25519 -C "johan-hite"`; hand the `.pub` line to Ferdi). Without it, SSH closes at auth (`Connection closed by 100.94.99.125 port 22`, no password prompt). `agent.py` reads `OLLAMA_URL` (default `http://127.0.0.1:11434`), so with the tunnel up the default works. First Ollama call cold-loads the 4.7 GB model (20–60 s) — that is why `call_ollama` timeout is 300, not 45. This tunnel is a foreground dependency: closing the SSH session kills generation mid-run. For a reproducible/monitored pipeline the agent should eventually run on a WireGuard-side host (controller/Mac Mini) so the path stops depending on a laptop.
+
 #### 1.4 What Needs to Be Done (TODOs)
 
 **Platform Engineering Unblocks**
@@ -121,10 +165,15 @@ All `__pycache__` artifacts and `.venv` environments have been actively purged a
 **Data Engineering Unblocks**
 - [x] Ingest the 18 SOPs from the RAG manual, generate embeddings, and populate the empty Qdrant vector database. *(done 2026-07-31 — `qti_knowledge_base` = 83 points, 384-dim/Cosine)*
 - [x] Wire the Rust backend (`/v1/query`) to actively call `clients::qdrant::search_sop` instead of returning the placeholder payload. *(done 2026-07-31 — commit `10898a1`, deployed as `a0b4bec`)*
+- [x] Confirm `clients/inference.rs` is needed — confirmed NOT needed (joint DS+DE decision 2026-08-02); gateway is retrieval-only (§1.3.5 / §2.3.6), file not built.
 
 **Data Science (Johan)**
-- [ ] Run full 5W1H evaluation suite (`test_run.py` -> `grade_result.py`) against live vector data once the API backend is fully wired.
-- [ ] Finalize the methodology documentation for the structured 5W1H prototype model analysis based on initial live pipeline metrics.
+- [x] Run full 5W1H evaluation suite against live data — done 2026-08-02 via the agent pipeline: 55/55 valid, 55/55 schema, 24/55 (43.6%) grounded (§1.6). *(laptop-side, uncommitted — see §0 item 10)*
+- [ ] Raise grounding above 43.6% — the retrieval→synthesis join lands on 24/55 only; prime suspect is the empty-retrieval falsy gate in `agent.py` (`if tool_output and ...` treats a 200-OK empty retrieval as "nothing" and skips synthesis). Apply the observe-first `test_run.py` fields + the `is not None` gate fix, re-run, compare to the 43.6% control. (Proposed fix — NOT yet applied.)
+- [ ] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence: the 2026-08-02 distribution (A=24/B=31/C=0) anchors the definitions; write the spec so Farrel can instrument `qti_confidence_tier_total` etc. (§4.4).
+- [ ] Add agent-side observability hooks — JSON-decode / Ollama-timeout / empty-retrieval counters + per-ticket latency (the `inference_time_sec` field is a primitive start); emit so Jep's Phase 8 has DS-side signal.
+- [ ] Finalize the methodology documentation (§1.4 original) — write it OFF the 2026-08-02 baseline + a model comparison (Qwen2.5-Coder-7B vs Ornith-1.0-9B via `OLLAMA_MODEL`), citing the schema-vs-grounding finding.
+- [ ] (PROPOSED, not built) Error→eval feedback loop — a curator that pulls error-shaped tickets from Loki into `golden_datasets.json` so the baseline is graded on production shapes; raw errors must NOT be auto-embedded into Qdrant (human-gated SOP authoring only). See §4.2 note.
 
 **DevOps (CI/CD & Prometheus)**
 - [ ] Integrate `grade_result.py` into a CI/CD pipeline (e.g., GitHub Actions) for automated schema regression testing on all new commits.
@@ -134,20 +183,53 @@ All `__pycache__` artifacts and `.venv` environments have been actively purged a
 #### 1.5 Quick Reference (Cheat Sheet)
 
 ```bash
-# Navigate to the Data Science working directory
+# --- Data Science working directory ---
 cd llm-inference
 
-# Run the LLM inference generator (api-gateway at http://100.106.122.68:30082 — override via QTI_API_URL, see test_run.py)
-python test_run.py
+# --- THREE TERMINALS (the agent is a service, not a batch script) ---
+# Terminal A — Ollama door (KEEP OPEN; closing it kills generation). See §1.3.7.
+ssh -L 11434:10.10.10.2:11434 ferdi@100.94.99.125
+# Terminal B — the agent (FastAPI on :8000)
+pip install uvicorn fastapi requests     # once
+uvicorn agent:app --host 127.0.0.1 --port 8000
+# Terminal C — the harness + grader (env vars are PER-TERMINAL; defaults already correct)
+#   AGENT_URL  -> agent      (default http://127.0.0.1:8000)
+#   OLLAMA_URL -> Ollama     (default http://127.0.0.1:11434, the tunnel)
+#   QTI_API_URL-> gateway    (default http://100.106.122.68:30082, used by tools.search_sop)
+python test_run.py        # ~10-20 min; first ticket slow (cold model load)
+python grade_result.py    # prints BOTH lines:
+#   Complete 5W1H Schema:      55/55 (100.0%)
+#   Grounded (how != pending): 24/55 (43.6%)
 
-# Grade the newly generated evaluation_results.json file against the strict 5W1H baseline
-python grade_result.py
+# --- one-shot cross-tab (diagnose WHY ungrounded; uses only guaranteed fields) ---
+python -c "import json,collections as c; d=json.load(open('evaluation_results.json',encoding='utf-8')); g=lambda i: bool(((i.get('5w1h_output') or {}).get('how') or '').strip()) and 'pending sop search' not in (((i.get('5w1h_output') or {}).get('how') or '').lower()); print('grounded mean %.1fs ungrounded mean %.1fs'%(sum(i['inference_time_sec'] for i in d if g(i))/max(1,sum(1 for i in d if g(i))), sum(i['inference_time_sec'] for i in d if not g(i))/max(1,sum(1 for i in d if not g(i))))"
 
-# Safely commit verified LLM evaluation pipeline scripts (excluding .venv/pycache artifacts)
-git add agent.py prompts.py test_run.py grade_result.py evaluation_results.json
-git commit -m "feat(llm-inference): update baseline evaluations against live API route"
+# --- commit (exclude .venv / __pycache__ per §1.3.4) ---
+git add llm-inference/agent.py llm-inference/prompts.py llm-inference/tools.py llm-inference/test_run.py llm-inference/grade_result.py llm-inference/evaluation_results.json
+git commit -m "feat(llm-inference): real-data 5W1H baseline (100% schema / 43.6% grounded)"
 git push origin main
 ```
+
+---
+
+#### 1.6 Evaluation Results — 2026-08-02 (first real-data baseline)
+
+| Metric | Value | Meaning |
+| --- | --- | --- |
+| Total test cases | 55 | golden_datasets.json synthetic tickets |
+| Valid JSON | 55/55 (100%) | agent returned parseable 5W1H on every ticket |
+| Complete 5W1H Schema | 55/55 (100%) | all six keys present + non-empty, reproducibly |
+| Grounded (how ≠ pending) | 24/55 (43.6%) | retrieval→synthesis join landed on 24 tickets |
+| Tier A (complete + grounded) | 24 | |
+| Tier B (complete, ungrounded) | 31 | |
+| Tier C (incomplete) | 0 | schema is 100%, so none |
+
+Latency is bimodal: grounded tickets (~18–34 s, two Ollama calls: analysis + synthesis) vs ungrounded (~5–11 s, one call, synthesis skipped). The ungrounded count ≈ the fast cluster — evidence the synthesis phase is being skipped on the 31, consistent with the empty-retrieval falsy-gate hypothesis (§1.4).
+
+What this proves: the retrieval→generation join works end-to-end on a real fraction; the shape problem that printed 0% for weeks is closed; and — because the grader now measures grounding — the project can finally SEE that "schema-complete" ≠ "RAG-grounded." That distinction is the binding constraint going forward, not a bug.
+What it does NOT prove: that grounding is high (it is 43.6%), nor reproducibility of the grounding rate across runs, nor quality of the grounded `how` beyond "not the placeholder." Those are the next measurements.
+
+> **Repo note (2026-08-02 crosscheck):** this baseline was produced on Johan's laptop and is NOT yet committed to `QTI-MAGANG` — the committed `evaluation_results.json` still holds placeholder gateway responses (grades 0% schema). See §0 item 10.
 
 ---
 
@@ -243,6 +325,8 @@ Both ports must be reachable for the relevant caller, or one service connects an
 
 The Python agent orchestrates and calls Ollama/Qwen **directly** for generation, calling the gateway only for RAG context. If that design holds, the gateway is **retrieval-only** and never forwards to an inference server → `clients/inference.rs` is not needed (one less file). Confirm with DS before building it.
 
+**Decision 2026-08-02 (Johan + Farrel):** confirmed — do NOT build `clients/inference.rs`. The Python agent orchestrates generation and calls Ollama directly (§1.3.7); the gateway only returns RAG context. This locks the architecture: the air-gapped gateway needs no Ollama route and no generation-time embedding. Consequence: the `INFERENCE_URL` env in `k8s/deployment.yaml` (§2.3.12) is permanently dead and should be removed.
+
 ##### 2.3.7 Git `target/` trap
 
 `.gitignore` ignores **only untracked** files. The `api-gateway/target` and `data-pipeline/target` folders were untracked, so creating the root `.gitignore` excluded them. But `rag-service/target/` had been **committed** earlier (DevOps), so `.gitignore` alone would not have stopped tracking it — deleting the `rag-service/` folder is what removed it. If a `target/` ever shows up staged again: `git rm -r --cached <path>` (the `--cached` flag keeps the files on disk). Stage source surgically (`git add api-gateway/src api-gateway/Cargo.toml ...`) rather than `git add .` until `.gitignore` is confirmed.
@@ -267,6 +351,8 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 
 `k8s/deployment.yaml` sets `INFERENCE_URL=http://inference-mac-mini:8080`, but no such Service/DNS exists in the cluster and the gateway is retrieval-only (§2.3.6) — it never makes an outbound inference call, so the env var is unused. Harmless, but it should be removed (or replaced by a real secret) when the Deployment is next touched (§3.4.1 "Add secrets").
 
+**2026-08-02:** with the retrieval-only decision final (§1.3.5 / §2.3.6), this env is confirmed dead with no future — remove it from `k8s/deployment.yaml` (1-line edit on next Deployment touch; §3.4.1).
+
 #### 2.4 What Needs to Be Done (TODOs)
 
 **My lane — shipped**
@@ -284,7 +370,7 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 - [x] **Reachable Qdrant path for `data-pipeline`** — resolved via SSH port-forward tunnel (Qdrant stays internal by design); ingestion completed. *Previously the blocker.*
 - [x] **Populate the collection** — done 2026-07-31: chunk → embed `all-MiniLM-L6-v2` (384-dim) → upsert UUID-v4 point IDs with payload `{text, sop_id, title, category, tier}`. `qti_knowledge_base` = **83 points**.
 - [x] **Wire `/v1/query`** to call `clients::qdrant::search_sop` — done (commit `10898a1`); verified live returning real SOP text.
-- [ ] **Confirm `clients/inference.rs`** is needed; if the gateway is retrieval-only (§2.3.6), do not build it.
+- [x] Confirm `clients/inference.rs` is needed — confirmed NOT needed (joint DS+DE decision 2026-08-02); gateway is retrieval-only (§1.3.5), file not built.
 - [x] Move hardcoded `QDRANT_URL` to an env var — **done** (`clients/qdrant.rs` reads `QDRANT_URL`, falls back to in-cluster DNS). Remaining: DevOps mounts it as a K8s Secret (§3.4.1).
 
 **Long-term**
@@ -639,7 +725,7 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
     -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
   ```
 - [x] **Set up the Mac Mini inference server** — Ollama live via WireGuard tunnel (§3.2.2). The gateway is retrieval-only (§2.3.6) so it does not consume `INFERENCE_URL`; the Python agent calls Ollama directly.
-- [ ] **Add secrets** — `QDRANT_URL`, `INFERENCE_URL`, and any API keys should be Kubernetes Secrets, not hardcoded in the Deployment.
+- [ ] **Add secrets** — `QDRANT_URL` and any API keys should be Kubernetes Secrets, not hardcoded. (`INFERENCE_URL` dropped 2026-08-02 — retrieval-only decision §1.3.5; the env is dead and should be removed, not secretized.)
 - [ ] **Add `.gitignore`** — *(done — see Data Engineering §2.3.5)* `rag-service/target/` build artifacts are committed to the repo. Need to exclude `target/`, `*.pdb`, etc.
 
 ##### 3.4.2 Infrastructure Improvements (CI/CD & Argo CD ownership)
@@ -811,6 +897,8 @@ Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5
 - [x] **Loki in Argo CD** — Application created (`k8s/loki/application.yaml`). Synced/Healthy. Old Helm release uninstalled.
 - [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Alertmanager data source also configured.
 - [ ] **Expose LLM token throughput, Qdrant latency, and JSON decode error metrics** to Prometheus/Grafana once the pipeline goes live (see Data Scientist §1.4).
+- [ ] (DS-side, proposed) Error→eval feedback loop: a curator pulls error-shaped tickets from Loki into `golden_datasets.json` so the 5W1H baseline is graded on production shapes. The error LOG is already in Loki (§4.1.1); the Telegram message is only the alert derived from it — never parse Telegram back into a store. Raw errors must NOT be auto-embedded into Qdrant (human-gated SOP authoring via §2.4 only). Status: PROPOSED, not built.
+- [ ] (DS-side) Agent error counters (JSON-decode / Ollama-timeout / empty-retrieval) are DS-owned and ride with the agent observability hooks (§1.4); the gateway-side `qti_*` business counters remain Farrel's (§4.4). Note for Phase 8: the Mac Mini *network* blocker is gone (WireGuard §3.2.2 + DS SSH tunnel §1.3.7); the only thing left blocking AI-pipeline monitoring is the metrics themselves (Farrel's `qti_*` + DS hooks).
 
 ### 4.3 Quick Reference (Observability)
 
@@ -1086,10 +1174,11 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved** — ingestion ran via SSH port-forward tunnel; `qti_knowledge_base` = **83 points**. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
 | DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) | "Blocked total" per §4.4, Phase 8 — same root cause as the two rows above. | ⏳ **Partial** — Mac Mini reachable via WireGuard (§3.2.2), so the infra blocker is gone; pipeline-monitoring work (Loki logs + metrics) still in progress. |
-| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ **Open / Blocked on Farrel** — `qti_*` business metrics still not instrumented; `/metrics` currently exposes only `health_checks_total`, `queries_total` (`http_requests_total` is registered but never incremented, so not exported). |
+| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ Partial — DS now provides the Tier distribution from data (A=24/B=31/C=0, §1.6), anchoring the spec; Farrel's `qti_*` instrumentation still not written; `/metrics` still exposes only `health_checks_total` / `queries_total`. |
 | Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
-| `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | May be entirely unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ⏳ **Open** — gateway deployed retrieval-only; file never built. |
+| `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | Possibly unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ✅ **Resolved 2026-08-02** — joint DS+DE decision: do NOT build it; gateway retrieval-only, generation in the DS agent (§1.3.5). Dead `INFERENCE_URL` env to remove (§2.3.12 / §3.4.1). |
+| DS grounding rate (43.6%) / retrieval→synthesis join | Data Science (Johan) | Synthesis lands on 24/55; the empty-retrieval falsy gate in `agent.py` is the prime suspect (§1.4 / §1.6). | ⏳ Open (DS) — schema locked at 100%; raising grounding is the next DS experiment (observe-first fields + `is not None` gate fix, then re-run vs the 43.6% control). |
 
 ---
 
