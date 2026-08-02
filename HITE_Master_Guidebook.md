@@ -58,7 +58,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - First real-data baseline (2026-08-02, 55 tickets): Valid JSON 55/55 (100%); Complete 5W1H Schema 55/55 (100%); Grounded (how ≠ "Pending SOP search") 24/55 (43.6%). `grade_result.py` now reports schema AND grounding as two metrics from one file. See §1.6.
     - Architecture locked (joint DS+DE decision 2026-08-02): do NOT build `clients/inference.rs`; gateway stays retrieval-only; generation lives in the DS agent. §7 row 8 → Resolved; §2.4 TODO → done; §2.3.6 / §2.3.12 / §3.4.1 annotated; the dead `INFERENCE_URL` Deployment env is confirmed for removal.
     - Still open (DS): raise grounding above 43.6% (synthesis-gate fix — *proposed, not yet applied*); methodology doc; business-metric/tier spec doc; agent-side observability hooks; `grade_result.py` into CI. The error→eval feedback loop (Loki → golden_datasets curator) is **PROPOSED only, not built**.
-    - **Repo-state note (crosscheck 2026-08-02):** the five `llm-inference/` fixes (A–E) and the 55-ticket 100%/43.6% baseline were produced on Johan's laptop and are **NOT yet committed** to `Merpatidove/QTI-MAGANG`. The committed repo still has Fixes A–E unapplied (`grade_result.py` reads `output`; `test_run.py` → gateway `/v1/query`; `agent.py` → `192.168.100.35:11434`, timeout 45; `tools.search_sop` → deleted `rag-service:8000`) and its `evaluation_results.json` holds placeholder gateway responses (grades 0% schema, not 100%). §1.1 / §1.2 / §1.5 / §1.6 reflect the laptop state; re-crosscheck after the laptop code is committed.
+    - **Repo-state note (crosscheck 2026-08-02, post-commit):** the five `llm-inference/` fixes (A–E) and the 55-ticket 100%/43.6% baseline are now committed to `Merpatidove/QTI-MAGANG` `main` as **`ef915cf`** (2026-08-02, author ardhityo1 — "feat(llm-inference): wire agent + first real-data 5W1H baseline (100% schema / 43.6% grounded)"). Verified against the local checkout the same day: `grade_result.py` reads `5w1h_output` + reports `grounded` (Fix A); `test_run.py` → agent `/process-ticket` via `AGENT_URL` (Fix B); `agent.py` → `127.0.0.1:11434` via `OLLAMA_URL`, timeout 300 (Fix C); `tools.search_sop` → gateway NodePort 30082 `/v1/query` (Fix D); synthesis prompt demands the exact six keys (Fix E); `.gitignore` fixed (no BOM, `venv`/`__pycache__`/ ignored); `evaluation_results.json` holds the 55 real agent triages (6-key `5w1h_output` on all 55, 24/55 grounded). §1.1 / §1.2 / §1.5 / §1.6 now match the committed state.
 
 ---
 
@@ -93,7 +93,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 | Rust API ( /v1/query ) | Deployed, live / retrieval-only | NodePort 30082. Returns retrieved SOP text in `remediation_payload.proposed_fix` (no 5W1H). Reached directly over Tailscale for the retrieval diagnostic; reached by the agent's `search_sop` for RAG context. |
 | Qdrant DB ( qti_knowledge_base ) | Deployed, 83 points | 384-dim / Cosine, 18 SOPs chunked. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
 
-> **Repo note (2026-08-02 crosscheck):** rows above describe the laptop state — the five `llm-inference/` fixes and the real 55-ticket baseline are NOT yet committed to `QTI-MAGANG` (see §0 item 10).
+> **Repo note (2026-08-02, post-commit):** rows above match the committed state — the five `llm-inference/` fixes and the real 55-ticket baseline are committed to `QTI-MAGANG` `main` as `ef915cf` and verified against the local checkout (see §0 item 10).
 
 #### 1.2 Data scientist
 
@@ -107,7 +107,7 @@ The Data Science evaluation pipeline is currently executed manually to evaluate 
   4. `grade_result.py` reports schema completeness AND grounding.
 - **Last Successful Run (2026-08-02):** full agent pipeline over 55 tickets — Valid JSON 55/55 (100%); Complete 5W1H Schema 55/55 (100%); **Grounded 24/55 (43.6%)**. This is the first run where the schema score is measured on real generated data (it was 0% on placeholders and on the wrong key before Fix A). The 43.6% is the first measurement of RAG grounding in the project. (The 2026-07-31 gateway-direct run that returned `ticket_metadata`/`remediation_payload` was the retrieval diagnostic, not the grading target.)
 
-> **Repo note (2026-08-02 crosscheck):** steps + run above describe the laptop state, NOT yet committed to `QTI-MAGANG` (see §0 item 10).
+> **Repo note (2026-08-02, post-commit):** steps + run above match the committed state — committed to `QTI-MAGANG` `main` as `ef915cf`, verified against the local checkout (see §0 item 10).
 
 #### 1.3 Notable Observations & "Gotchas"
 
@@ -143,7 +143,7 @@ Joint DS+DE decision: the Rust api-gateway does retrieval only (returns the retr
 Both definitions live in this one file so they cannot drift (the same drift that produced the old never-written `output` key). The Tier mapping derived from them: **Tier A** = schema-complete AND grounded; **Tier B** = complete but ungrounded; **Tier C** = schema-incomplete / escape-hatch. On 2026-08-02: A = 24, B = 31, C = 0. Hand this file (not a copy of the logic) to Ferdi for CI (§1.4).
 Caveat: the grounding check is naive — an escape-hatch string like `"no matching SOP"` would be mis-counted as grounded because it lacks the placeholder substring. Revisit the `PLACEHOLDER_HOW` list from the real distribution before treating 43.6% as exact.
 
-> **Repo note (2026-08-02 crosscheck):** this two-metric grader is laptop-side, NOT yet committed to `QTI-MAGANG` (see §0 item 10).
+> **Repo note (2026-08-02, post-commit):** this two-metric grader is committed to `QTI-MAGANG` `main` as `ef915cf` and verified against the local checkout (`grade_result.py` reads `5w1h_output`, reports schema + `grounded`; see §0 item 10).
 
 ##### 1.3.7 Ollama reachability from a Tailscale laptop — the SSH-tunnel door
 
@@ -168,7 +168,7 @@ Auth is key-only (§3.3.2): the laptop needs an ED25519 key in `ferdi`'s `~/.ssh
 - [x] Confirm `clients/inference.rs` is needed — confirmed NOT needed (joint DS+DE decision 2026-08-02); gateway is retrieval-only (§1.3.5 / §2.3.6), file not built.
 
 **Data Science (Johan)**
-- [x] Run full 5W1H evaluation suite against live data — done 2026-08-02 via the agent pipeline: 55/55 valid, 55/55 schema, 24/55 (43.6%) grounded (§1.6). *(laptop-side, uncommitted — see §0 item 10)*
+- [x] Run full 5W1H evaluation suite against live data — done 2026-08-02 via the agent pipeline: 55/55 valid, 55/55 schema, 24/55 (43.6%) grounded (§1.6). *(committed to `QTI-MAGANG` `main` as `ef915cf`, 2026-08-02)*
 - [ ] Raise grounding above 43.6% — the retrieval→synthesis join lands on 24/55 only; prime suspect is the empty-retrieval falsy gate in `agent.py` (`if tool_output and ...` treats a 200-OK empty retrieval as "nothing" and skips synthesis). Apply the observe-first `test_run.py` fields + the `is not None` gate fix, re-run, compare to the 43.6% control. (Proposed fix — NOT yet applied.)
 - [ ] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence: the 2026-08-02 distribution (A=24/B=31/C=0) anchors the definitions; write the spec so Farrel can instrument `qti_confidence_tier_total` etc. (§4.4).
 - [ ] Add agent-side observability hooks — JSON-decode / Ollama-timeout / empty-retrieval counters + per-ticket latency (the `inference_time_sec` field is a primitive start); emit so Jep's Phase 8 has DS-side signal.
@@ -206,7 +206,7 @@ python -c "import json,collections as c; d=json.load(open('evaluation_results.js
 
 # --- commit (exclude .venv / __pycache__ per §1.3.4) ---
 git add llm-inference/agent.py llm-inference/prompts.py llm-inference/tools.py llm-inference/test_run.py llm-inference/grade_result.py llm-inference/evaluation_results.json
-git commit -m "feat(llm-inference): real-data 5W1H baseline (100% schema / 43.6% grounded)"
+git commit -m "feat(llm-inference): wire agent + first real-data 5W1H baseline (100% schema / 43.6% grounded)"
 git push origin main
 ```
 
@@ -229,7 +229,7 @@ Latency is bimodal: grounded tickets (~18–34 s, two Ollama calls: analysis + s
 What this proves: the retrieval→generation join works end-to-end on a real fraction; the shape problem that printed 0% for weeks is closed; and — because the grader now measures grounding — the project can finally SEE that "schema-complete" ≠ "RAG-grounded." That distinction is the binding constraint going forward, not a bug.
 What it does NOT prove: that grounding is high (it is 43.6%), nor reproducibility of the grounding rate across runs, nor quality of the grounded `how` beyond "not the placeholder." Those are the next measurements.
 
-> **Repo note (2026-08-02 crosscheck):** this baseline was produced on Johan's laptop and is NOT yet committed to `QTI-MAGANG` — the committed `evaluation_results.json` still holds placeholder gateway responses (grades 0% schema). See §0 item 10.
+> **Repo note (2026-08-02, post-commit):** this baseline is committed to `QTI-MAGANG` `main` as `ef915cf` — the committed `evaluation_results.json` holds these exact 55 real agent triages (verified 6-key `5w1h_output` on all 55, `grounded` on 24). See §0 item 10.
 
 ---
 
