@@ -71,6 +71,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - **Re-scoping of the remaining business metrics:** `qti_confidence_tier_total`, `qti_routing_decision_total`, `qti_fact_coverage_score` are **not** gateway metrics — under retrieval-only (§1.3.5) the gateway never produces a Tier, routing decision, or fact-coverage score. Those measure the DS agent's 5W1H output and move to Johan's agent-side observability hooks (§1.4). Jep's Phase 6/7 business dashboards can now proceed against the three live retrieval metrics; Tier-based dashboards wait on the DS agent hooks + Tier spec (§1.4).
     - **Still open (DE):** `http_requests_total` registered but never incremented (§0 item 9); `data-pipeline` CI/CD; embedding consistency guard; optional `QDRANT_URL` full-Secret migration; optional `api_contract.md` wording update.
 12. **2026-08-03 (DS grounding experiment completed):** Grounding raised 43.6% → 96.4% (53/55), verified genuine (all 53 grounded tickets carry non-empty SOP context; 0 empty-preview). Root cause: the synthesis gate's `"Error" not in str(tool_output)` substring veto false-positived on successful retrievals whose SOP text contained "Error" (e.g. the "Error Signature:" heading in the SOP template), skipping synthesis. Fix: structured `_is_err` check (None / `error` key / string starting with "Error"). Intermediate hypothesis (`is not None` gate) was falsified first (24/55, inside the 24–28 control band). The 2 remaining ungrounded are `action_taken = none` (TKT-1054/1055), a tool-selection edge. Artifacts: `evaluation_results.json` + archived samples (control2, treatment1_isnotnone, treatment2_errorgate). Formalized as a two-stage maturity model in the methodology doc (Stage 1 synthetic = complete; Stage 2 real-data = next milestone).
+13. **2026-08-03 (DS agent observability delivered; Jep fully unblocked).** `agent.py` now implements `prometheus_client` to expose AI-pipeline metrics on `/metrics` (bound `0.0.0.0`), scrapeable over the Tailscale mesh at Johan's IP `100.126.65.74:8000/metrics`. Five `qti_*` metrics: `qti_llm_request_duration_seconds{phase}`, `qti_llm_tokens_total{type}`, `qti_agent_parse_errors_total`, `qti_agent_ollama_timeouts_total`, `qti_agent_empty_retrieval_total`. Business-metrics spec formalized (Tier A = complete + grounded; Tier B = complete + ungrounded; Tier C = incomplete/escape) and handed to Jep. §1.4 DS TODOs closed; §4.1.4 documents the scrape target; §4.4 Phases 6/7 unblocked, Phase 8 done; §7 rows 4–5 resolved.
 
 ---
 
@@ -96,7 +97,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 
 | Component / File | Status | Access / Details |
 | --- | --- | --- |
-| llm-inference/agent.py | Active / generation brain | FastAPI ReAct orchestrator on :8000 (`POST /process-ticket`). Calls Ollama (Qwen2.5-Coder-7B-Instruct Q4_K_M) over the SSH tunnel → WireGuard (§1.3.7 / §3.2.2) for the 5W1H + tool choice; calls the gateway `/v1/query` via `tools.search_sop` for RAG context; synthesis phase grounds `why`/`how` in the retrieved SOP. **Synthesis gate now uses `_is_err` (structured error check) so retrievals whose SOP text contains "Error" still reach synthesis — raised grounding 43.6%→96.4% (2026-08-03).** Ollama URL env-driven (`OLLAMA_URL`, default `http://127.0.0.1:11434`). |
+| llm-inference/agent.py | Active / Generation & Metrics | FastAPI ReAct orchestrator on :8000 (`POST /process-ticket`). Calls Ollama (Qwen2.5-Coder-7B-Instruct Q4_K_M) over the SSH tunnel → WireGuard (§1.3.7 / §3.2.2) for the 5W1H + tool choice; calls the gateway `/v1/query` via `tools.search_sop` for RAG context; synthesis phase grounds `why`/`how` in the retrieved SOP. **Synthesis gate now uses `_is_err` (structured error check) so retrievals whose SOP text contains "Error" still reach synthesis — raised grounding 43.6%→96.4% (2026-08-03).** **Update 2026-08-03: now implements `prometheus_client` to expose AI-pipeline metrics on `/metrics`; bound to `0.0.0.0` to allow Prometheus scraping over the Tailscale mesh.** Ollama URL env-driven (`OLLAMA_URL`, default `http://127.0.0.1:11434`). |
 | llm-inference/test_run.py | Active / unblocked | POSTs each ticket to the **agent** `/process-ticket` (`AGENT_URL`, default `http://127.0.0.1:8000`) and extracts the flat 6-key 5W1H dict. **Writes observe-first fields (`action_taken`, `result_preview`, `grounded`) into each result row for per-ticket mechanism audit (2026-08-03).** No longer points at the gateway directly — that path was the 2026-07-31 retrieval diagnostic only. |
 | llm-inference/grade_result.py | Active / two metrics | Reads `5w1h_output` (Fix A — was the never-written `output` key, the root cause of the eternal 0%). Reports **two** metrics: Complete 5W1H Schema (six keys present) and Grounded (`how` ≠ the `Pending SOP search` placeholder, constant `PLACEHOLDER_HOW`). Single source of truth for both definitions (handed to Ferdi for CI). |
 | llm-inference/prompts.py | Stable | `REACT_SYSTEM_PROMPT` defines the six lowercase keys + tool-selection directives; proven to elicit the shape. |
@@ -188,8 +189,8 @@ Auth is key-only (§3.3.2): the laptop needs an ED25519 key in `ferdi`'s `~/.ssh
 **Data Science (Johan)**
 - [x] Run full 5W1H evaluation suite against live data — done 2026-08-02 via the agent pipeline: 55/55 valid, 55/55 schema, 24/55 (43.6%) grounded (§1.6). *(committed to `QTI-MAGANG` `main` as `ef915cf`, 2026-08-02)*
 - [x] Raise grounding above the 43.6% baseline — **DONE 2026-08-03 (96.4%)**. Real root cause was the "Error"-substring veto in the synthesis gate, not the falsy gate; the `is not None` hypothesis was falsified first.
-- [ ] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence: the 2026-08-03 distribution (A=53/B=2/C=0, §1.6) anchors the definitions; feeds the DS agent-side observability hooks + Tier spec (§1.4 / §7), which Tier-based dashboards now wait on.
-- [ ] Add agent-side observability hooks (JSON-decode failure, Ollama timeout, empty-retrieval counters).
+- [x] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence. *(Done 2026-08-03: Tier A = Complete + Grounded; Tier B = Complete + Ungrounded; Tier C = Incomplete/Escape. Handed off to Jep for dashboards).*
+- [x] Add agent-side observability hooks (JSON-decode failure, Ollama timeout, empty-retrieval counters). *(Done 2026-08-03: exposed 5 custom `qti_*` metrics on `/metrics`, §4.1.4).*
 - [ ] Finalize methodology documentation (drafted; two-stage maturity model).
 - [ ] (PROPOSED) Stage 2 real-data validation: error→eval loop (needs Loki access via Platform) + SOP knowledge-base expansion.
 
@@ -909,6 +910,18 @@ Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5
 
 > **Security note:** The Telegram bot token is stored in plaintext in the AlertManager Secret and Helm values. Consider rotating if this token is used elsewhere.
 
+#### 4.1.4 Agent-Side AI Pipeline Metrics (Added 2026-08-03)
+
+The Data Science Python agent (`agent.py`) now exposes business and AI health metrics to unblock Phase 6, 7, and 8.
+
+- **Scrape Target:** `http://100.126.65.74:8000/metrics` (Johan's Tailscale IP, agent bound to `0.0.0.0`).
+- **Exported Metrics (`qti_*`):**
+  - `qti_llm_request_duration_seconds` (Histogram): LLM latency by `phase={analysis,synthesis}`.
+  - `qti_llm_tokens_total` (Counter): Token usage by `type={prompt,completion}`.
+  - `qti_agent_parse_errors_total` (Counter): JSON decode failures.
+  - `qti_agent_ollama_timeouts_total` (Counter): Ollama request timeouts.
+  - `qti_agent_empty_retrieval_total` (Counter): `search_sop` calls with no actionable SOP returned.
+
 ### 4.2 What Needs to Be Done — Observability
 
 - [x] **ServiceMonitor for api-gateway** — done. Prometheus scrapes `/metrics` every 15s via `servicemonitor.yaml`.
@@ -919,7 +932,7 @@ Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5
 - [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Alertmanager data source also configured.
 - [ ] **Expose LLM token throughput, Qdrant latency, and JSON decode error metrics** to Prometheus/Grafana once the pipeline goes live (see Data Scientist §1.4).
 - [ ] (DS-side, proposed) Error→eval feedback loop: a curator pulls error-shaped tickets from Loki into `golden_datasets.json` so the 5W1H baseline is graded on production shapes. The error LOG is already in Loki (§4.1.1); the Telegram message is only the alert derived from it — never parse Telegram back into a store. Raw errors must NOT be auto-embedded into Qdrant (human-gated SOP authoring via §2.4 only). Status: PROPOSED, not built.
-- [ ] (DS-side) Agent error counters (JSON-decode / Ollama-timeout / empty-retrieval) are DS-owned and ride with the agent observability hooks (§1.4); the gateway-side `qti_*` business counters remain Farrel's (§4.4). Note for Phase 8: the Mac Mini *network* blocker is gone (WireGuard §3.2.2 + DS SSH tunnel §1.3.7); the only thing left blocking AI-pipeline monitoring is the metrics themselves (Farrel's `qti_*` + DS hooks).
+- [x] (DS-side) Agent error counters (JSON-decode / Ollama-timeout / empty-retrieval) are DS-owned and ride with the agent observability hooks (§1.4); the gateway-side `qti_*` business counters remain Farrel's (§4.4). Note for Phase 8: the Mac Mini *network* blocker is gone (WireGuard §3.2.2 + DS SSH tunnel §1.3.7); the only thing left blocking AI-pipeline monitoring is the metrics themselves (Farrel's `qti_*` + DS hooks). *(2026-08-03: agent error counters now live — `qti_agent_parse_errors_total` / `qti_agent_ollama_timeouts_total` / `qti_agent_empty_retrieval_total` on `100.126.65.74:8000/metrics`, §4.1.4; the metrics blocker is gone.)*
 
 ### 4.3 Quick Reference (Observability)
 
@@ -984,9 +997,9 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 2** | Diagram Arsitektur | ⏭️ | Dilewati atas kesepakatan, tidak menghalangi progress. |
 | **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
 | **Phase 5** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
-| **Phase 6** | Dashboard | ⚠️ | Node Exporter & K8s Monitoring siap. *Dashboard bisnis HITE blocked (nunggu Farrel)*. |
-| **Phase 7** | Alert Rules | ⚠️ | 13 alert infra + 1 log-based alert aktif. *Alert bisnis belum (menunggu instrumentasi Farrel).*. |
-| **Phase 8** | Monitoring AI Pipeline | ⚠️ | Baru menambahkan alert untuk MacMiniDown. Untuk pipelinenya belum. |
+| **Phase 6** | Dashboard | ⏳ | Node Exporter & K8s Monitoring siap. *Unblocked (2026-08-03)*. Business logic spec (Tier A/B/C) dan custom metrics dari agent DS sudah live di `100.126.65.74:8000/metrics`. Dashboard siap dibangun. |
+| **Phase 7** | Alert Rules | ⏳ | 13 alert infra + 1 log-based alert aktif. *Unblocked (2026-08-03)*. Alert bisnis AI pipeline bisa dibuat menggunakan metric `qti_agent_parse_errors_total` dan `qti_agent_ollama_timeouts_total`. |
+| **Phase 8** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Target scrape AI agent sudah tersedia di Tailscale mesh. *Alert `MacMiniDown` ditambahkan (zayfa, 2026-08-03); untuk pipeline monitoring-nya sendiri sudah unblocked.* |
 | **Phase 9** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
 | **Phase 10** | Production Checklist | ❌ | Belum dimulai, menunggu Phase 8-9 tuntas. |
 | **Phase 11** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
@@ -1013,12 +1026,12 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 
 - [x] **Qdrant**: Lengkap (ServiceMonitor + Alerting)
 - [✅] **Rust API (`api-gateway`)**: Metric infra ✅, log ✅, alert Down ✅
-- [⚠️] **Mac Mini / Inference / LLM**: Baru menambahkan alert MacMiniDown
+- [⏳] **Mac Mini / Inference / LLM**: Belum tersentuh sama sekali *(2026-08-03: sebagian teratasi — AI-pipeline metrics dari agent DS live di `100.126.65.74:8000/metrics` via Tailscale, §4.1.4; alert `MacMiniDown` ditambahkan (zayfa); node Mac Mini sendiri belum di-instrumentasi.)*
 
 ### 4. Business Metrics
 
-- [❌] **Metrics Target**: Tier A/B/C, Confidence, Schema Validation, Escape Hatch, Inference/Retrieval Time, Request Rate, Latency, Error Rate
-> *Status: Blocked total, menunggu Farrel melakukan instrumentasi kode.*
+- [⏳] **Metrics Target**: Tier A/B/C, Confidence, Schema Validation, Escape Hatch, Inference/Retrieval Time, Request Rate, Latency, Error Rate
+> *Status (2026-08-03): sebagian unblocked — gateway metrics (Farrel, §0 item 11) + agent `qti_*` metrics (Johan, §0 item 13) sudah live; dashboard/alert Phase 6/7 siap dibangun. Tier-based Confidence masih menunggu DS agent hooks + spec.*
 
 ---
 
@@ -1189,8 +1202,8 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Data Science E2E testing (§1.4) | Platform Engineering (Hilmi) | Rust API (port 8080) and Qdrant (port 6333) need a K0s network route (NodePort/LoadBalancer/kubeconfig RBAC) — see §1.3.1. | ✅ **Resolved** — api-gateway on NodePort 30082 (`http://100.106.122.68:30082`). Qdrant kept internal; DS E2E runs against the gateway. |
 | Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved** — ingestion ran via SSH port-forward tunnel; `qti_knowledge_base` = **83 points**. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
-| DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) | "Blocked total" per §4.4, Phase 8 — same root cause as the two rows above. | ⏳ **Partial** — Mac Mini reachable via WireGuard (§3.2.2), so the infra blocker is gone; pipeline-monitoring work (Loki logs + metrics) still in progress. |
-| DevOps business-metric dashboards (Phase 6/7) | Farrel (gateway metrics) + Johan (agent metrics) | Gateway-side `qti_*` retrieval metrics required code instrumentation; Tier/routing/fact-coverage are agent-side. | ⏳ **Partial → gateway side DONE 2026-08-03** — `qti_qdrant_match_total` / `qti_request_duration_seconds` / `qti_ticket_classification_total` live on `/metrics`, so retrieval dashboards can be built. Tier-based dashboards wait on Johan's agent hooks + Tier spec (§1.4). |
+| DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) & Johan (metrics) | "Blocked total" per §4.4, Phase 8. | ✅ **Resolved** — Infra blocker bypassed via Tailscale binding. Johan delivered agent metrics (`qti_*`) on `100.126.65.74:8000/metrics`. |
+| DevOps business-metric dashboards (Phase 6/7) | Farrel (gateway metrics) + Johan (agent metrics & Tier spec) | Gateway-side `qti_*` metrics and agent-side Tier specs needed instrumentation. | ✅ **Resolved** — Farrel delivered gateway metrics. Johan delivered agent hooks (`qti_*`) and official Tier A/B/C specs. Jep is fully unblocked to build dashboards. |
 | Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
 | `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | Possibly unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ✅ **Resolved 2026-08-02** — joint DS+DE decision: do NOT build it; gateway retrieval-only, generation in the DS agent (§1.3.5). Dead `INFERENCE_URL` env **removed 2026-08-03** (§0 item 11). |
