@@ -59,6 +59,17 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - Architecture locked (joint DS+DE decision 2026-08-02): do NOT build `clients/inference.rs`; gateway stays retrieval-only; generation lives in the DS agent. §7 row 8 → Resolved; §2.4 TODO → done; §2.3.6 / §2.3.12 / §3.4.1 annotated; the dead `INFERENCE_URL` Deployment env is confirmed for removal.
     - Still open (DS): raise grounding above 43.6% (synthesis-gate fix — *proposed, not yet applied*); methodology doc; business-metric/tier spec doc; agent-side observability hooks; `grade_result.py` into CI. The error→eval feedback loop (Loki → golden_datasets curator) is **PROPOSED only, not built**.
     - **Repo-state note (crosscheck 2026-08-02, post-commit):** the five `llm-inference/` fixes (A–E) and the 55-ticket 100%/43.6% baseline are now committed to `Merpatidove/QTI-MAGANG` `main` as **`ef915cf`** (2026-08-02, author ardhityo1 — "feat(llm-inference): wire agent + first real-data 5W1H baseline (100% schema / 43.6% grounded)"). Verified against the local checkout the same day: `grade_result.py` reads `5w1h_output` + reports `grounded` (Fix A); `test_run.py` → agent `/process-ticket` via `AGENT_URL` (Fix B); `agent.py` → `127.0.0.1:11434` via `OLLAMA_URL`, timeout 300 (Fix C); `tools.search_sop` → gateway NodePort 30082 `/v1/query` (Fix D); synthesis prompt demands the exact six keys (Fix E); `.gitignore` fixed (no BOM, `venv`/`__pycache__`/ ignored); `evaluation_results.json` holds the 55 real agent triages (6-key `5w1h_output` on all 55, 24/55 grounded). §1.1 / §1.2 / §1.5 / §1.6 now match the committed state.
+11. **2026-08-03 — Data Engineering sprint deliverables complete; gateway-side business metrics live.** Farrel closed the remaining Data Engineer items from §4.4 and the 2026-08-02 open list:
+    - **Dead `INFERENCE_URL` env removed** from `api-gateway/k8s/deployment.yaml` (§2.3.12) — permanently dead under the retrieval-only decision (§1.3.5); removed, not secretized.
+    - **`api-gateway-secrets` mounted** via `envFrom: secretRef` in `deployment.yaml` (Secret created by Hilmi in ns `qti`; resolves §3.4.1 "add secrets" / §2.3.9 Secret-mounting). Note: `QDRANT_URL` is still hardcoded in the `env:` block as a safety net — `env:` takes precedence over `envFrom`, so the Secret's value is currently shadowed; full migration to the Secret is an optional cleanup.
+    - **Three gateway-side business metrics instrumented + verified live** in `api-gateway/src/routes/query.rs`, exported on `/metrics` and scraped by the existing ServiceMonitor:
+      - `qti_qdrant_match_total{found="true|false"}` (counter) — did the Qdrant search return a usable SOP match.
+      - `qti_request_duration_seconds` (histogram) — end-to-end `/v1/query` latency.
+      - `qti_ticket_classification_total{classification="..."}` (counter) — responses by classification (retrieved / embed_error).
+
+      Verified 2026-08-03: `POST /v1/query` → classification `"retrieved"` + real SOP; `GET /metrics` shows all three series. Deployed via the standard CI path (image SHA per the Actions tab).
+    - **Re-scoping of the remaining business metrics:** `qti_confidence_tier_total`, `qti_routing_decision_total`, `qti_fact_coverage_score` are **not** gateway metrics — under retrieval-only (§1.3.5) the gateway never produces a Tier, routing decision, or fact-coverage score. Those measure the DS agent's 5W1H output and move to Johan's agent-side observability hooks (§1.4). Jep's Phase 6/7 business dashboards can now proceed against the three live retrieval metrics; Tier-based dashboards wait on the DS agent hooks + Tier spec (§1.4).
+    - **Still open (DE):** `http_requests_total` registered but never incremented (§0 item 9); `data-pipeline` CI/CD; embedding consistency guard; optional `QDRANT_URL` full-Secret migration; optional `api_contract.md` wording update.
 
 ---
 
@@ -247,18 +258,18 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 
 | Component / File | Status | Access / Details |
 |---|---|---|
-| `api-gateway` Deployment (ns `qti`) | 1/1 Running, Healthy | NodePort **30082** (was `api-gateway.qti.svc:8080`). Image `ghcr.io/merpatidove/qti-api-gateway:a0b4bec` (deployed 2026-07-31; live SHA verified at the Actions tab — CI/CD report §3.1). |
+| `api-gateway` Deployment (ns `qti`) | 1/1 Running, Healthy | NodePort **30082**. Image rebuilt 2026-08-03 (adds `qti_*` metrics; SHA per Actions tab). `envFrom: secretRef: api-gateway-secrets` mounted; dead `INFERENCE_URL` env removed. |
 | `api-gateway/src/main.rs` | Working, deployed | Orchestrator only (no business logic). Declares `mod models/routes/clients`, wires the router, exposes `/metrics`, binds `0.0.0.0:8080`. |
 | `api-gateway/src/models.rs` | Working, deployed | `QueryRequest`, `QueryResponse`, `TicketMetadata`, `RemediationPayload` (serde; matches `api_contract.md`). |
 | `api-gateway/src/routes/mod.rs` | Working, deployed | Module table of contents: `pub mod health; pub mod query;` |
 | `api-gateway/src/routes/health.rs` | Working, deployed | `GET /v1/health` → `{"status":"ok","version":"0.1.0"}`; counter `health_checks_total`. K8s liveness/readiness target. |
-| `api-gateway/src/routes/query.rs` | Working, deployed | `POST /v1/query`. `Json(req): Json<QueryRequest>` validates the body (bad JSON → auto 422). Returns a real `QueryResponse` from `search_sop` since commit `10898a1` (2026-07-31; was placeholder); counter `queries_total`. |
+| `api-gateway/src/routes/query.rs` | Working, deployed | `POST /v1/query`; returns real `QueryResponse` from `search_sop`. **Now also instruments `qti_qdrant_match_total`, `qti_request_duration_seconds`, `qti_ticket_classification_total`** (2026-08-03), all exported on `/metrics`. |
 | `api-gateway/src/clients/mod.rs` | Working, deployed | Module table of contents: `pub mod qdrant;` |
 | `api-gateway/src/clients/qdrant.rs` | Written, compiled, **WIRED + deployed** | `search_sop(Vec<f32>) -> Result<...>` via `reqwest` (REST, :6333). Constants `QDRANT_URL = http://qdrant.qdrant.svc.cluster.local:6333`, `COLLECTION_NAME = qti_knowledge_base`. Called from `query.rs` since commit `10898a1` (2026-07-31). |
 | `api-gateway/src/clients/inference.rs` | **NOT written** | Mac Mini inference client — possibly obsolete (see §2.3.6 / §2.4). |
 | `api-gateway/Cargo.toml` | Working | axum 0.8, tokio `[full]`, serde `[derive]`, serde_json, reqwest 0.12 `[rustls-tls, json]`, tracing, tracing-subscriber `[env-filter]`, prometheus 0.13 `[process]`, lazy_static 1.4, anyhow 1.0, **fastembed 4**. |
 | `api-gateway/Dockerfile` | Working | Multi-stage `rust:1-bookworm` → `debian:bookworm-slim`; was ~32 MB before `--download-only` baked the embedding model in (image `a0b4bec` is larger). |
-| `api-gateway/k8s/deployment.yaml` | Working | Liveness + readiness probes on `/v1/health`; `EMBED_CACHE_DIR=/opt/fastembed` env (2026-07-31, model baked into image). |
+| `api-gateway/k8s/deployment.yaml` | Working | Liveness/readiness on `/v1/health`; `EMBED_CACHE_DIR=/opt/fastembed`; **`envFrom: secretRef: api-gateway-secrets` added, `INFERENCE_URL` removed (2026-08-03)**. `QDRANT_URL` still in `env:` as a safety net (shadows the Secret). |
 | `api-gateway/k8s/service.yaml` | Working | NodePort 30082 (was ClusterIP on 8080; changed 2026-07-31). |
 | `api-gateway/k8s/kustomization.yaml` | Working | `newTag: <sha>` managed by CI commit-back. |
 | `api-gateway/k8s/servicemonitor.yaml` | Working | Prometheus scrapes `/metrics` every 15s. |
@@ -353,30 +364,34 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 
 **2026-08-02:** with the retrieval-only decision final (§1.3.5 / §2.3.6), this env is confirmed dead with no future — remove it from `k8s/deployment.yaml` (1-line edit on next Deployment touch; §3.4.1).
 
+**2026-08-03:** **removed** — `INFERENCE_URL` no longer exists in `k8s/deployment.yaml` (§0 item 11).
+
 #### 2.4 What Needs to Be Done (TODOs)
 
 **My lane — shipped**
+- [x] Modularize `api-gateway`; `/v1/health` live; `/v1/query` returns real data; `clients/qdrant.rs::search_sop` wired; root `.gitignore`; `rag-service/` removed.
+- [x] `data-pipeline` parser isolates all 18 SOPs; `qti_knowledge_base` created at 384/Cosine.
+- [x] Reachable Qdrant path for `data-pipeline` (SSH port-forward); collection populated (83 points).
+- [x] Wire `/v1/query` → `search_sop` (commit `10898a1`, deployed `a0b4bec`).
+- [x] Confirm `clients/inference.rs` NOT needed (retrieval-only, §1.3.5); file not built.
+- [x] Move hardcoded `QDRANT_URL` to env-read in `clients/qdrant.rs` (falls back to in-cluster DNS).
 
-- [x] Modularize `api-gateway` (`models.rs`, `routes/health.rs`, `routes/query.rs`, `clients/qdrant.rs`, rewired `main.rs`).
-- [x] `/v1/health` live and passing the CI smoke test.
-- [x] `/v1/query` accepts + validates JSON (placeholder → **real data 2026-07-31**, returns retrieved SOP text).
-- [x] `clients/qdrant.rs::search_sop` written and compiling.
-- [x] Root `.gitignore` added; `rag-service/` removed from the repo.
-- [x] `data-pipeline` parser isolates all 18 SOPs.
-- [x] `qti_knowledge_base` collection created at 384 / Cosine (via DevOps, per my spec).
+**My lane — done 2026-08-03**
+- [x] Remove dead `INFERENCE_URL` env from `deployment.yaml` (§2.3.12).
+- [x] Mount `api-gateway-secrets` via `envFrom: secretRef` (§3.4.1 / §2.3.9).
+- [x] Instrument gateway-side business metrics: `qti_qdrant_match_total`, `qti_request_duration_seconds`, `qti_ticket_classification_total` — verified live on `/metrics`.
 
-**My lane — done 2026-07-31; remaining work below**
+**Minor / optional cleanups**
+- [ ] `http_requests_total` is registered but never incremented (§0 item 9) — wire it or drop it.
+- [ ] Optional: fully migrate `QDRANT_URL` into the Secret (remove the hardcoded `env:` line that currently shadows it).
+- [ ] Optional: update `api_contract.md` wording to match retrieval-only (§1.3.5).
 
-- [x] **Reachable Qdrant path for `data-pipeline`** — resolved via SSH port-forward tunnel (Qdrant stays internal by design); ingestion completed. *Previously the blocker.*
-- [x] **Populate the collection** — done 2026-07-31: chunk → embed `all-MiniLM-L6-v2` (384-dim) → upsert UUID-v4 point IDs with payload `{text, sop_id, title, category, tier}`. `qti_knowledge_base` = **83 points**.
-- [x] **Wire `/v1/query`** to call `clients::qdrant::search_sop` — done (commit `10898a1`); verified live returning real SOP text.
-- [x] Confirm `clients/inference.rs` is needed — confirmed NOT needed (joint DS+DE decision 2026-08-02); gateway is retrieval-only (§1.3.5), file not built.
-- [x] Move hardcoded `QDRANT_URL` to an env var — **done** (`clients/qdrant.rs` reads `QDRANT_URL`, falls back to in-cluster DNS). Remaining: DevOps mounts it as a K8s Secret (§3.4.1).
+**Long-term (explicitly not this sprint)**
+- [ ] `data-pipeline` CI/CD — Dockerfile + workflow + CronJob (§3.4.3).
+- [ ] Embedding consistency guard — assert at startup that the embedder dimension equals the collection's vector size, so §2.3.1 fails loudly instead of per-upsert.
 
-**Long-term**
-
-- [ ] `data-pipeline` CI/CD — Dockerfile + workflow + CronJob (DevOps CI/CD report §3.4.3).
-- [ ] Embedding consistency guard — assert at startup that the configured embedder's dimension equals the collection's vector size, to make §2.3.1 fail loudly instead of per-upsert.
+**NOT mine (re-scoped 2026-08-03)**
+- `qti_confidence_tier_total`, `qti_routing_decision_total`, `qti_fact_coverage_score` → DS-agent-side observability (Johan §1.4). The retrieval-only gateway never produces these values.
 
 #### 2.5 Quick Reference (Cheat Sheet)
 
@@ -1034,14 +1049,9 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 
 ### 🔧 Farrel (Backend — Rust / Axum / Qdrant)
 
-- **Action Item 1:** Implementasi instrumentasi metric bisnis sesuai spesifikasi:
-  - `qti_confidence_tier_total`
-  - `qti_routing_decision_total`
-  - `qti_qdrant_match_total`
-  - `qti_fact_coverage_score`
-  - `qti_request_duration_seconds`
-- **Action Item 2:** Pastikan log `api-gateway` dialirkan ke `stdout`/`stderr` (bukan disimpan di file terpisah).
-- **Action Item 3:** Klarifikasi dokumentasi `api_contract.md` (menyebutkan "Python Inference Engine", namun repository menggunakan `mistral.rs`/Rust).
+- **Action Item 1 (metric bisnis):** ✅ Gateway-side DONE 2026-08-03 — `qti_qdrant_match_total`, `qti_request_duration_seconds`, `qti_ticket_classification_total` live di `/metrics`. `qti_confidence_tier_total` / `qti_routing_decision_total` / `qti_fact_coverage_score` di-re-scope ke observability agent DS (Johan, §1.4) karena gateway retrieval-only tidak pernah menghasilkan Tier/routing/fact-coverage.
+- **Action Item 2 (log ke stdout):** ✅ Done — log api-gateway masuk Loki (§7 resolved).
+- **Action Item 3 (api_contract.md):** Resolved-in-principle oleh keputusan retrieval-only (§1.3.5); update wording contract = cleanup dokumentasi minor.
 
 ### 👤 Johanes
 
@@ -1095,7 +1105,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 - [x] Create the Private Container Registry (`10.20.20.202:32000`).
 - [x] Provision NFS-based Persistent Storage (`nfs-csi`).
 - [x] Execute SOP-06 Firewall Lockdown (Air-Gapped Absolute).
-- [ ] **Dev Team Unblocks**: Farrel needs to revise the Rust API code to use the `qdrant.qdrant.svc.cluster.local` DNS URL target instead of `qdrant-service`.
+- [x] **Dev Team Unblocks**: Farrel needs to revise the Rust API code to use the `qdrant.qdrant.svc.cluster.local` DNS URL target instead of `qdrant-service`. *(Done: Farrel implemented a fallback to http://qdrant.qdrant.svc.cluster.local:6333 in api-gateway/src/clients/qdrant.rs)*
 - [ ] **Infra Improvements**: Replace the Reverse SSH Tunnel with an official Network Bridge from the `10.20.20.0/24` block to the Mac Mini (Ports `11434` and `9100`), once the Mac Mini is returned to the physical office infrastructure.
 - [ ] **Infra Improvements**: Request the office network admin to apply a DHCP Reservation (Static IP) for the Mac Mini's MAC Address (`192.168.20.163`) when the device returns.
 
@@ -1174,10 +1184,10 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved** — ingestion ran via SSH port-forward tunnel; `qti_knowledge_base` = **83 points**. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
 | DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) | "Blocked total" per §4.4, Phase 8 — same root cause as the two rows above. | ⏳ **Partial** — Mac Mini reachable via WireGuard (§3.2.2), so the infra blocker is gone; pipeline-monitoring work (Loki logs + metrics) still in progress. |
-| DevOps Prometheus/Grafana/Loki business-metric dashboards (Phase 6/7) | Farrel (Data Engineering) | Business metrics (`qti_confidence_tier_total`, etc.) require code instrumentation not yet written — see §4.4, Farrel's action items. | ⏳ Partial — DS now provides the Tier distribution from data (A=24/B=31/C=0, §1.6), anchoring the spec; Farrel's `qti_*` instrumentation still not written; `/metrics` still exposes only `health_checks_total` / `queries_total`. |
+| DevOps business-metric dashboards (Phase 6/7) | Farrel (gateway metrics) + Johan (agent metrics) | Gateway-side `qti_*` retrieval metrics required code instrumentation; Tier/routing/fact-coverage are agent-side. | ⏳ **Partial → gateway side DONE 2026-08-03** — `qti_qdrant_match_total` / `qti_request_duration_seconds` / `qti_ticket_classification_total` live on `/metrics`, so retrieval dashboards can be built. Tier-based dashboards wait on Johan's agent hooks + Tier spec (§1.4). |
 | Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
-| `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | Possibly unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ✅ **Resolved 2026-08-02** — joint DS+DE decision: do NOT build it; gateway retrieval-only, generation in the DS agent (§1.3.5). Dead `INFERENCE_URL` env to remove (§2.3.12 / §3.4.1). |
+| `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | Possibly unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ✅ **Resolved 2026-08-02** — joint DS+DE decision: do NOT build it; gateway retrieval-only, generation in the DS agent (§1.3.5). Dead `INFERENCE_URL` env **removed 2026-08-03** (§0 item 11). |
 | DS grounding rate (43.6%) / retrieval→synthesis join | Data Science (Johan) | Synthesis lands on 24/55; the empty-retrieval falsy gate in `agent.py` is the prime suspect (§1.4 / §1.6). | ⏳ Open (DS) — schema locked at 100%; raising grounding is the next DS experiment (observe-first fields + `is not None` gate fix, then re-run vs the 43.6% control). |
 
 ---
