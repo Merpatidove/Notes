@@ -70,6 +70,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
       Verified 2026-08-03: `POST /v1/query` → classification `"retrieved"` + real SOP; `GET /metrics` shows all three series. Deployed via the standard CI path (image SHA per the Actions tab).
     - **Re-scoping of the remaining business metrics:** `qti_confidence_tier_total`, `qti_routing_decision_total`, `qti_fact_coverage_score` are **not** gateway metrics — under retrieval-only (§1.3.5) the gateway never produces a Tier, routing decision, or fact-coverage score. Those measure the DS agent's 5W1H output and move to Johan's agent-side observability hooks (§1.4). Jep's Phase 6/7 business dashboards can now proceed against the three live retrieval metrics; Tier-based dashboards wait on the DS agent hooks + Tier spec (§1.4).
     - **Still open (DE):** `http_requests_total` registered but never incremented (§0 item 9); `data-pipeline` CI/CD; embedding consistency guard; optional `QDRANT_URL` full-Secret migration; optional `api_contract.md` wording update.
+12. **2026-08-03 (DS grounding experiment completed):** Grounding raised 43.6% → 96.4% (53/55), verified genuine (all 53 grounded tickets carry non-empty SOP context; 0 empty-preview). Root cause: the synthesis gate's `"Error" not in str(tool_output)` substring veto false-positived on successful retrievals whose SOP text contained "Error" (e.g. the "Error Signature:" heading in the SOP template), skipping synthesis. Fix: structured `_is_err` check (None / `error` key / string starting with "Error"). Intermediate hypothesis (`is not None` gate) was falsified first (24/55, inside the 24–28 control band). The 2 remaining ungrounded are `action_taken = none` (TKT-1054/1055), a tool-selection edge. Artifacts: `evaluation_results.json` + archived samples (control2, treatment1_isnotnone, treatment2_errorgate). Formalized as a two-stage maturity model in the methodology doc (Stage 1 synthetic = complete; Stage 2 real-data = next milestone).
 
 ---
 
@@ -95,16 +96,19 @@ Nothing from the original five source files was deleted. Every table, checklist,
 
 | Component / File | Status | Access / Details |
 | --- | --- | --- |
-| llm-inference/agent.py | Active / generation brain | FastAPI ReAct orchestrator on :8000 (`POST /process-ticket`). Calls Ollama (Qwen2.5-Coder-7B-Instruct Q4_K_M) over the SSH tunnel (§1.3.7) for the 5W1H + tool choice; calls the gateway `/v1/query` via `tools.search_sop` for RAG context; synthesis phase grounds `why`/`how` in the retrieved SOP. Ollama URL env-driven (`OLLAMA_URL`, default `http://127.0.0.1:11434`). |
-| llm-inference/test_run.py | Active / unblocked | POSTs each ticket to the **agent** `/process-ticket` (`AGENT_URL`, default `http://127.0.0.1:8000`) and extracts the flat 6-key 5W1H dict. No longer points at the gateway directly — that path was the 2026-07-31 retrieval diagnostic only. |
+| llm-inference/agent.py | Active / generation brain | FastAPI ReAct orchestrator on :8000 (`POST /process-ticket`). Calls Ollama (Qwen2.5-Coder-7B-Instruct Q4_K_M) over the SSH tunnel → WireGuard (§1.3.7 / §3.2.2) for the 5W1H + tool choice; calls the gateway `/v1/query` via `tools.search_sop` for RAG context; synthesis phase grounds `why`/`how` in the retrieved SOP. **Synthesis gate now uses `_is_err` (structured error check) so retrievals whose SOP text contains "Error" still reach synthesis — raised grounding 43.6%→96.4% (2026-08-03).** Ollama URL env-driven (`OLLAMA_URL`, default `http://127.0.0.1:11434`). |
+| llm-inference/test_run.py | Active / unblocked | POSTs each ticket to the **agent** `/process-ticket` (`AGENT_URL`, default `http://127.0.0.1:8000`) and extracts the flat 6-key 5W1H dict. **Writes observe-first fields (`action_taken`, `result_preview`, `grounded`) into each result row for per-ticket mechanism audit (2026-08-03).** No longer points at the gateway directly — that path was the 2026-07-31 retrieval diagnostic only. |
 | llm-inference/grade_result.py | Active / two metrics | Reads `5w1h_output` (Fix A — was the never-written `output` key, the root cause of the eternal 0%). Reports **two** metrics: Complete 5W1H Schema (six keys present) and Grounded (`how` ≠ the `Pending SOP search` placeholder, constant `PLACEHOLDER_HOW`). Single source of truth for both definitions (handed to Ferdi for CI). |
 | llm-inference/prompts.py | Stable | `REACT_SYSTEM_PROMPT` defines the six lowercase keys + tool-selection directives; proven to elicit the shape. |
 | llm-inference/tools.py | Active / fixed | `search_sop` hits the live gateway NodePort 30082 `/v1/query` (was the deleted `rag-service:8000`). `execute_safe_cli` sandbox not deployed — non-critical; the agent catches the error and falls back to the analysis-phase 5W1H (still six keys). |
-| evaluation_results.json | Generated (real) | 55 **real agent** 5W1H triages (2026-08-02), not placeholders: 100% schema-complete, 43.6% grounded. |
+| evaluation_results.json | Generated (real) | Latest run (2026-08-03, Error-gate treatment): 55/55 valid, 55/55 schema, **53/55 grounded (96.4%)**. (2026-08-02 baseline: 100% schema, 43.6% grounded.) |
+| evaluation_results_{control2,treatment1_isnotnone,treatment2_errorgate}_0803.json | Archived | Experiment samples (2026-08-03): control band (24–28/55) + falsified `is not None` hypothesis + winning Error-gate treatment. |
 | Rust API ( /v1/query ) | Deployed, live / retrieval-only | NodePort 30082. Returns retrieved SOP text in `remediation_payload.proposed_fix` (no 5W1H). Reached directly over Tailscale for the retrieval diagnostic; reached by the agent's `search_sop` for RAG context. |
 | Qdrant DB ( qti_knowledge_base ) | Deployed, 83 points | 384-dim / Cosine, 18 SOPs chunked. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
 
 > **Repo note (2026-08-02, post-commit):** rows above match the committed state — the five `llm-inference/` fixes and the real 55-ticket baseline are committed to `QTI-MAGANG` `main` as `ef915cf` and verified against the local checkout (see §0 item 10).
+
+> **Repo note (2026-08-03, post-commit):** the grounding experiment (observe-first fields + `_is_err` synthesis gate) and the 96.4% run are committed to `QTI-MAGANG` `main` as `3a03a55` (see §0 item 12).
 
 #### 1.2 Data scientist
 
@@ -116,9 +120,12 @@ The Data Science evaluation pipeline is currently executed manually to evaluate 
   2. The agent runs a ReAct loop: Ollama produces a 5W1H analysis + tool choice; if `search_sop` is chosen, the agent retrieves RAG context from the gateway `/v1/query`; a synthesis call grounds `why`/`how` in it.
   3. `test_run.py` stores the flat six-key 5W1H dict under `5w1h_output` in `evaluation_results.json`.
   4. `grade_result.py` reports schema completeness AND grounding.
-- **Last Successful Run (2026-08-02):** full agent pipeline over 55 tickets — Valid JSON 55/55 (100%); Complete 5W1H Schema 55/55 (100%); **Grounded 24/55 (43.6%)**. This is the first run where the schema score is measured on real generated data (it was 0% on placeholders and on the wrong key before Fix A). The 43.6% is the first measurement of RAG grounding in the project. (The 2026-07-31 gateway-direct run that returned `ticket_metadata`/`remediation_payload` was the retrieval diagnostic, not the grading target.)
+- **Last Successful Run (2026-08-03, Error-gate treatment):** full agent pipeline over 55 tickets — Valid JSON 55/55 (100%); Complete 5W1H Schema 55/55 (100%); **Grounded 53/55 (96.4%)**, up from 43.6% (2026-08-02). The root cause of the old ceiling was the `"Error" not in str(tool_output)` substring veto in the synthesis gate (§0 item 12), fixed via the structured `_is_err` check.
+- **Baseline Run (2026-08-02):** first run where the schema score is measured on real generated data (was 0% on placeholders and on the wrong key before Fix A); 24/55 (43.6%) grounded was the first measurement of RAG grounding in the project. (The 2026-07-31 gateway-direct run that returned `ticket_metadata`/`remediation_payload` was the retrieval diagnostic, not the grading target.)
 
 > **Repo note (2026-08-02, post-commit):** steps + run above match the committed state — committed to `QTI-MAGANG` `main` as `ef915cf`, verified against the local checkout (see §0 item 10).
+
+> **Repo note (2026-08-03, post-commit):** the Error-gate treatment run above is committed to `QTI-MAGANG` `main` as `3a03a55` (see §0 item 12).
 
 #### 1.3 Notable Observations & "Gotchas"
 
@@ -180,11 +187,11 @@ Auth is key-only (§3.3.2): the laptop needs an ED25519 key in `ferdi`'s `~/.ssh
 
 **Data Science (Johan)**
 - [x] Run full 5W1H evaluation suite against live data — done 2026-08-02 via the agent pipeline: 55/55 valid, 55/55 schema, 24/55 (43.6%) grounded (§1.6). *(committed to `QTI-MAGANG` `main` as `ef915cf`, 2026-08-02)*
-- [ ] Raise grounding above 43.6% — the retrieval→synthesis join lands on 24/55 only; prime suspect is the empty-retrieval falsy gate in `agent.py` (`if tool_output and ...` treats a 200-OK empty retrieval as "nothing" and skips synthesis). Apply the observe-first `test_run.py` fields + the `is not None` gate fix, re-run, compare to the 43.6% control. (Proposed fix — NOT yet applied.)
-- [ ] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence: the 2026-08-02 distribution (A=24/B=31/C=0) anchors the definitions; write the spec so Farrel can instrument `qti_confidence_tier_total` etc. (§4.4).
-- [ ] Add agent-side observability hooks — JSON-decode / Ollama-timeout / empty-retrieval counters + per-ticket latency (the `inference_time_sec` field is a primitive start); emit so Jep's Phase 8 has DS-side signal.
-- [ ] Finalize the methodology documentation (§1.4 original) — write it OFF the 2026-08-02 baseline + a model comparison (Qwen2.5-Coder-7B vs Ornith-1.0-9B via `OLLAMA_MODEL`), citing the schema-vs-grounding finding.
-- [ ] (PROPOSED, not built) Error→eval feedback loop — a curator that pulls error-shaped tickets from Loki into `golden_datasets.json` so the baseline is graded on production shapes; raw errors must NOT be auto-embedded into Qdrant (human-gated SOP authoring only). See §4.2 note.
+- [x] Raise grounding above the 43.6% baseline — **DONE 2026-08-03 (96.4%)**. Real root cause was the "Error"-substring veto in the synthesis gate, not the falsy gate; the `is not None` hypothesis was falsified first.
+- [ ] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence: the 2026-08-03 distribution (A=53/B=2/C=0, §1.6) anchors the definitions; feeds the DS agent-side observability hooks + Tier spec (§1.4 / §7), which Tier-based dashboards now wait on.
+- [ ] Add agent-side observability hooks (JSON-decode failure, Ollama timeout, empty-retrieval counters).
+- [ ] Finalize methodology documentation (drafted; two-stage maturity model).
+- [ ] (PROPOSED) Stage 2 real-data validation: error→eval loop (needs Loki access via Platform) + SOP knowledge-base expansion.
 
 **DevOps (CI/CD & Prometheus)**
 - [ ] Integrate `grade_result.py` into a CI/CD pipeline (e.g., GitHub Actions) for automated schema regression testing on all new commits.
@@ -210,7 +217,7 @@ uvicorn agent:app --host 127.0.0.1 --port 8000
 python test_run.py        # ~10-20 min; first ticket slow (cold model load)
 python grade_result.py    # prints BOTH lines:
 #   Complete 5W1H Schema:      55/55 (100.0%)
-#   Grounded (how != pending): 24/55 (43.6%)
+#   Grounded (how != pending): 53/55 (96.4%)
 
 # --- one-shot cross-tab (diagnose WHY ungrounded; uses only guaranteed fields) ---
 python -c "import json,collections as c; d=json.load(open('evaluation_results.json',encoding='utf-8')); g=lambda i: bool(((i.get('5w1h_output') or {}).get('how') or '').strip()) and 'pending sop search' not in (((i.get('5w1h_output') or {}).get('how') or '').lower()); print('grounded mean %.1fs ungrounded mean %.1fs'%(sum(i['inference_time_sec'] for i in d if g(i))/max(1,sum(1 for i in d if g(i))), sum(i['inference_time_sec'] for i in d if not g(i))/max(1,sum(1 for i in d if not g(i))))"
@@ -223,24 +230,23 @@ git push origin main
 
 ---
 
-#### 1.6 Evaluation Results — 2026-08-02 (first real-data baseline)
+#### 1.6 Evaluation Results — 2026-08-03 (Error-gate treatment; Stage 1 synthetic baseline)
 
 | Metric | Value | Meaning |
 | --- | --- | --- |
 | Total test cases | 55 | golden_datasets.json synthetic tickets |
 | Valid JSON | 55/55 (100%) | agent returned parseable 5W1H on every ticket |
 | Complete 5W1H Schema | 55/55 (100%) | all six keys present + non-empty, reproducibly |
-| Grounded (how ≠ pending) | 24/55 (43.6%) | retrieval→synthesis join landed on 24 tickets |
-| Tier A (complete + grounded) | 24 | |
-| Tier B (complete, ungrounded) | 31 | |
+| Grounded (how ≠ pending) | **53/55 (96.4%)** | Error-gate treatment (2026-08-03); up from 24/55 (43.6%) |
+| Tier A (complete + grounded) | 53 | |
+| Tier B (complete, ungrounded) | 2 | `action_taken = none` (TKT-1054/1055) |
 | Tier C (incomplete) | 0 | schema is 100%, so none |
 
-Latency is bimodal: grounded tickets (~18–34 s, two Ollama calls: analysis + synthesis) vs ungrounded (~5–11 s, one call, synthesis skipped). The ungrounded count ≈ the fast cluster — evidence the synthesis phase is being skipped on the 31, consistent with the empty-retrieval falsy-gate hypothesis (§1.4).
+**Note (2026-08-03):** bimodality collapsed — synthesis now runs on 53/55. The 2 ungrounded are `action_taken = none`. Grounding verified genuine (0 empty-preview grounded tickets). Pre-fix control band: 24–28/55 (43.6–50.9%). This is a Stage 1 (synthetic) result; real-data validation is Stage 2 (§8 of the methodology doc).
 
-What this proves: the retrieval→generation join works end-to-end on a real fraction; the shape problem that printed 0% for weeks is closed; and — because the grader now measures grounding — the project can finally SEE that "schema-complete" ≠ "RAG-grounded." That distinction is the binding constraint going forward, not a bug.
-What it does NOT prove: that grounding is high (it is 43.6%), nor reproducibility of the grounding rate across runs, nor quality of the grounded `how` beyond "not the placeholder." Those are the next measurements.
+What the 2026-08-02 baseline proved: the retrieval→generation join works end-to-end on a real fraction; the shape problem that printed 0% for weeks is closed; and — because the grader measures grounding — the project can finally SEE that "schema-complete" ≠ "RAG-grounded." That distinction is the binding constraint going forward, not a bug.
 
-> **Repo note (2026-08-02, post-commit):** this baseline is committed to `QTI-MAGANG` `main` as `ef915cf` — the committed `evaluation_results.json` holds these exact 55 real agent triages (verified 6-key `5w1h_output` on all 55, `grounded` on 24). See §0 item 10.
+> **Repo note (2026-08-03, post-commit):** the Error-gate run is committed to `QTI-MAGANG` `main` as `3a03a55` — the committed `evaluation_results.json` holds these exact 55 real agent triages (verified 6-key `5w1h_output` on all 55, `grounded` on 53). The 2026-08-02 baseline (43.6%) was committed as `ef915cf` (§0 item 10); archived experiment samples are in `evaluation_results_{control2,treatment1_isnotnone,treatment2_errorgate}_0803.json`.
 
 ---
 
@@ -1188,7 +1194,7 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
 | `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | Possibly unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ✅ **Resolved 2026-08-02** — joint DS+DE decision: do NOT build it; gateway retrieval-only, generation in the DS agent (§1.3.5). Dead `INFERENCE_URL` env **removed 2026-08-03** (§0 item 11). |
-| DS grounding rate (43.6%) / retrieval→synthesis join | Data Science (Johan) | Synthesis lands on 24/55; the empty-retrieval falsy gate in `agent.py` is the prime suspect (§1.4 / §1.6). | ⏳ Open (DS) — schema locked at 100%; raising grounding is the next DS experiment (observe-first fields + `is not None` gate fix, then re-run vs the 43.6% control). |
+| DS grounding rate (43.6%) / retrieval→synthesis join | Data Science (Johan) | Synthesis landed on 24/55; the "Error"-substring veto in the synthesis gate was the root cause, not the falsy gate (§1.4 / §1.6). | ✅ **Resolved 2026-08-03** — grounding raised 43.6% → 96.4% (53/55) via the `_is_err` synthesis-gate fix; verified genuine. |
 
 ---
 
