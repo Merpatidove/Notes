@@ -72,7 +72,11 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - **Still open (DE):** `http_requests_total` registered but never incremented (§0 item 9); `data-pipeline` CI/CD; embedding consistency guard; optional `QDRANT_URL` full-Secret migration; optional `api_contract.md` wording update.
 12. **2026-08-03 (DS grounding experiment completed; reconciled):** Grounding raised from the 24–28/55 control band (43.6–50.9%) to a treatment band of **52–53/55 (94.5–96.4%, ≈95%)**, verified genuine (all grounded tickets carry non-empty SOP context; 0 empty-preview). The archived experiment record (`3a03a55`, `treatment2_errorgate_0803.json`) grades 53/55; the latest committed `evaluation_results.json` (`edb7dff`, HEAD `0cde7e2`) grades 52/55 — the 1-ticket delta is which tickets fell through on each stochastic run (archived: TKT-1054/1055, `action_taken = none`; HEAD: TKT-1016/1041/1047), not a metric change. Root cause fixed: the synthesis gate's `"Error" not in str(tool_output)` substring veto false-positived on SOP text containing "Error"; fix = structured `_is_err` check. Intermediate `is not None` hypothesis falsified first (24/55, in-band).
 13. **2026-08-03 (DS agent observability delivered; Jep fully unblocked).** `agent.py` now implements `prometheus_client` to expose AI-pipeline metrics on `/metrics` (bound `0.0.0.0`), scrapeable over the Tailscale mesh at Johan's IP `100.126.65.74:8000/metrics`. Five `qti_*` metrics: `qti_llm_request_duration_seconds{phase}`, `qti_llm_tokens_total{type}`, `qti_agent_parse_errors_total`, `qti_agent_ollama_timeouts_total`, `qti_agent_empty_retrieval_total`. Business-metrics spec formalized (Tier A = complete + grounded; Tier B = complete + ungrounded; Tier C = incomplete/escape) and handed to Jep. §1.4 DS TODOs closed; §4.1.4 documents the scrape target; §4.4 Phases 6/7 unblocked, Phase 8 done; §7 rows 4–5 resolved.
-
+14. **2026-08-04 — Phase 8 (Observability & LLM Integration) 100% completed.** Reconciled live cluster, Mac Mini, and `DEBIAN13` state following end-to-end connectivity verification:
+    - **Ollama binding updated.** Mac Mini Ollama reconfigured to bind `0.0.0.0:11434` (`*:11434`), enabling cross-mesh access. Verified via Tailscale from `DEBIAN13` (`http://100.79.30.90:11434/api/tags`).
+    - **`qti-agent` deployment live.** Pod `qti-agent` deployed and running (`1/1 Running` in ns `qti`), HTTP gateway responding on port `8080`.
+    - **Agent Johan metrics registered.** Scrape target `100.126.65.74:8000` added to `k8s/prometheus/prometheus-additional.yaml` and committed to repo.
+    - **Phase 8 officially closed.** Status raised from ~40% to **100% Done**.
 ---
 
 ## Table of Contents
@@ -996,7 +1000,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 5** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
 | **Phase 6** | Dashboard | ⏳ | Node Exporter & K8s Monitoring siap. *Unblocked (2026-08-03)*. Business logic spec (Tier A/B/C) dan custom metrics dari agent DS sudah live di `100.126.65.74:8000/metrics`. Dashboard siap dibangun. |
 | **Phase 7** | Alert Rules | ⏳ | 13 alert infra + 1 log-based alert aktif. *Unblocked (2026-08-03)*. Alert bisnis AI pipeline bisa dibuat menggunakan metric `qti_agent_parse_errors_total` dan `qti_agent_ollama_timeouts_total`. |
-| **Phase 8** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Target scrape AI agent sudah tersedia di Tailscale mesh. *Alert `MacMiniDown` ditambahkan (zayfa, 2026-08-03); untuk pipeline monitoring-nya sendiri sudah unblocked.* |
+| **Phase 8** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
 | **Phase 9** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
 | **Phase 10** | Production Checklist | ❌ | Belum dimulai, menunggu Phase 8-9 tuntas. |
 | **Phase 11** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
@@ -1024,6 +1028,10 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 - [x] **Qdrant**: Lengkap (ServiceMonitor + Alerting)
 - [✅] **Rust API (`api-gateway`)**: Metric infra ✅, log ✅, alert Down ✅
 - [⏳] **Mac Mini / Inference / LLM**: Belum tersentuh sama sekali *(2026-08-03: sebagian teratasi — AI-pipeline metrics dari agent DS live di `100.126.65.74:8000/metrics` via Tailscale, §4.1.4; alert `MacMiniDown` ditambahkan (zayfa); node Mac Mini sendiri belum di-instrumentasi.)*
+- [x] **Mac Mini Node Exporter:** Scraped via `prometheus-additional.yaml` (`100.79.30.90:9100`).
+- [x] **Ollama Remote Reachability:** Bound to `0.0.0.0:11434` (`*:11434`), verified via Tailscale.
+- [x] **Agent Johan Metrics:** Target `100.126.65.74:8000/metrics` registered and active.
+- [x] **Pod `qti-agent` Deployment:** Status `1/1 Running` in ns `qti`, port 8080 responding.
 
 ### 4. Business Metrics
 
@@ -1205,7 +1213,9 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
 | `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | Possibly unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ✅ **Resolved 2026-08-02** — joint DS+DE decision: do NOT build it; gateway retrieval-only, generation in the DS agent (§1.3.5). Dead `INFERENCE_URL` env **removed 2026-08-03** (§0 item 11). |
 | DS grounding rate / retrieval→synthesis join | Data Science (Johan) | Synthesis-gate "Error"-substring veto was the root cause (§1.4 / §1.6). | ✅ Resolved 2026-08-03 — grounding raised from the 43.6–50.9% control band to a 94.5–96.4% treatment band (≈95%) via the `_is_err` synthesis-gate fix; verified genuine. |
-
+| **Ollama Remote Binding** | Jep / DevOps | Mac Mini (`100.79.30.90`) | ✅ **Resolved** | Rebound to `0.0.0.0:11434`; verified via `curl /api/tags`. |
+| **Scrape Target Agent Johan** | Jep / DevOps | Johan / Data Science | ✅ **Resolved** | Added `100.126.65.74:8000` to `prometheus-additional.yaml`. |
+| **`qti-agent` Deployment** | Ferdi / DevOps | K8s Cluster (ns `qti`) | ✅ **Resolved** | Pod running 1/1, HTTP server listening on `:8080`. |
 ---
 
 *End of Master Guidebook. All five source reports are preserved in full above; only escaping artifacts were cleaned, the DevOps report was split by role (CI/CD vs. observability), and organizational headers/cross-references were added.*
