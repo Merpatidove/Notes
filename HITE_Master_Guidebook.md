@@ -997,13 +997,13 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 1** | Audit Infrastruktur | ✅ | Hostname, timezone, swap, firewall, kernel modules, containerd, CoreDNS, storage class (`nfs-csi`) sehat. |
 | **Phase 2** | Diagram Arsitektur | ⏭️ | Dilewati atas kesepakatan, tidak menghalangi progress. |
 | **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
-| **Phase 5** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
-| **Phase 6** | Dashboard | ⏳ | Node Exporter & K8s Monitoring siap. *Unblocked (2026-08-03)*. Business logic spec (Tier A/B/C) dan custom metrics dari agent DS sudah live di `100.126.65.74:8000/metrics`. Dashboard siap dibangun. |
-| **Phase 7** | Alert Rules | ⏳ | 13 alert infra + 1 log-based alert aktif. *Unblocked (2026-08-03)*. Alert bisnis AI pipeline bisa dibuat menggunakan metric `qti_agent_parse_errors_total` dan `qti_agent_ollama_timeouts_total`. |
-| **Phase 8** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
-| **Phase 9** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
-| **Phase 10** | Production Checklist | ❌ | Belum dimulai, menunggu Phase 8-9 tuntas. |
-| **Phase 11** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
+| **Phase 4** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
+| **Phase 5** | Dashboard | ⏳ | Node Exporter & K8s Monitoring siap. *Unblocked (2026-08-03)*. Business logic spec (Tier A/B/C) dan custom metrics dari agent DS sudah live di `100.126.65.74:8000/metrics`. Dashboard siap dibangun. |
+| **Phase 6** | Alert Rules | ⏳ | 13 alert infra + 1 log-based alert aktif. *Unblocked (2026-08-03)*. Alert bisnis AI pipeline bisa dibuat menggunakan metric `qti_agent_parse_errors_total` dan `qti_agent_ollama_timeouts_total`. |
+| **Phase 7** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
+| **Phase 8** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
+| **Phase 9** | Production Checklist | ❌ | Belum dimulai, menunggu Phase 8-9 tuntas. |
+| **Phase 10** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
 
 ---
 
