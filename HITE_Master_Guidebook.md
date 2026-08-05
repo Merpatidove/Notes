@@ -77,6 +77,20 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - **`qti-agent` deployment live.** Pod `qti-agent` deployed and running (`1/1 Running` in ns `qti`), HTTP gateway responding on port `8080`.
     - **Agent Johan metrics registered.** Scrape target `100.126.65.74:8000` added to `k8s/prometheus/prometheus-additional.yaml` and committed to repo.
     - **Phase 8 officially closed.** Status raised from ~40% to **100% Done**.
+15. **2026-08-05 — Stage 2 real-data validation begins (manual curation) + reproducibility experiments.**
+   - **Real-data eval (manual, ahead of Loki access):**
+     - Built the error→eval pipeline by hand: `collected_error_logs.json` (14 raw records from real debugging — Ollama/WireGuard outage, Loki/Grafana outage, dev noise) → `real_tickets.json` (3 flat tickets: REAL-001 Ollama, REAL-002 Loki, REAL-003 nginx).
+     - Added a `DATASET` env override + shape-tolerant loader to `test_run.py` so one harness grades either the synthetic golden set or the real set.
+     - **Coverage-gap finding:** all 3 returned `grounded=True`, but REAL-001/002 grounded in the **wrong SOPs** (SOP-KIT-002 liveness-probe, SOP-DB-001 MySQL) because no Ollama/Loki SOP exists; only REAL-003 (nginx) matched its real SOP (SOP-DOC-002). Retrieval always returns a nearest neighbor, so the **naive grounding check (`how != placeholder`) can't distinguish right-SOP from wrong-SOP grounding**. Honest read: 1/3 correctly grounded, 2/3 grounded-in-wrong-SOP.
+     - **Next Stage 2 step = SOP knowledge-base expansion:** author `SOP-INF-003` (Ollama unreachable over WireGuard) + `SOP-INF-004` (Loki datasource unreachable) → append to `RAG_Manual.md` → Farrel re-ingests (384-dim) → re-eval. Caveat: once ingested, REAL-001/002 become "seen"; keep collecting fresh tickets for generalization.
+   - **Reproducibility experiments (added `OLLAMA_TEMPERATURE` / `OLLAMA_SEED` env knobs to `agent.py`):**
+     - default temp, random seed → band **52–54/55** (~11 "fragile" tickets take turns failing per draw — that's the fluctuation).
+     - temp **0.1** + seed 42 → **45/55**, 9 parse errors (JSON degeneration — an ablation finding: low temp degrades synthesis reliability).
+     - temp **0.8** + seed 42 → **49/55**, then **48/55** with a *different* ungrounded set (only TKT-1055 overlapping) → **a fixed seed is NOT fully reproducible on Metal** (llama.cpp GPU non-determinism).
+     - Final clean run: all 55 chose `search_sop`, 0 empty retrievals, but **7 synthesis parse failures** → 48/55. Dominant remaining loss = synthesis JSON decode failures → fix = **synthesis retry-on-parse-failure**.
+     - CI guidance: gate on a **threshold** (e.g. `grounded ≥ 45/55`), not an exact number.
+   - **Repo hygiene:** archives `evaluation_results_real_0804.json` + `evaluation_results_seed42_0805.json`; committed `agent.py`, `test_run.py`, `real_tickets.json`, `collected_error_logs.json` + archives. HEAD `evaluation_results.json` kept as the documented 52/55 synthetic Stage-1 baseline.
+
 ---
 
 ## Table of Contents
@@ -88,6 +102,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 - [§5 — Platform Engineering (Owner: Hilmi)](#5-platform-engineering-owner-hilmi)
 - [§6 — Mac Mini Full-Hosting: Consolidated View (NEW)](#6-mac-mini-full-hosting-consolidated-view-new)
 - [§7 — Cross-Role Dependency & Blocker Map (NEW)](#7-cross-role-dependency--blocker-map-new)
+- [§8 — Methodology Doc Draft (NEW)](#8-methodology-doc-draft-new)
 
 ---
 
@@ -101,8 +116,8 @@ Nothing from the original five source files was deleted. Every table, checklist,
 
 | Component / File | Status | Access / Details |
 | --- | --- | --- |
-| llm-inference/agent.py | Active / Generation & Metrics | FastAPI ReAct orchestrator on :8000 (`POST /process-ticket`). Calls Ollama (Qwen2.5-Coder-7B-Instruct Q4_K_M) over the SSH tunnel → WireGuard (§1.3.7 / §3.2.2) for the 5W1H + tool choice; calls the gateway `/v1/query` via `tools.search_sop` for RAG context; synthesis phase grounds `why`/`how` in the retrieved SOP. **Synthesis gate now uses `_is_err` (structured error check) so retrievals whose SOP text contains "Error" still reach synthesis — raised grounding from the 43.6–50.9% control band to a **94.5–96.4% treatment band** (2026-08-03).** **Update 2026-08-03: now implements `prometheus_client` to expose AI-pipeline metrics on `/metrics`; bound to `0.0.0.0` to allow Prometheus scraping over the Tailscale mesh.** Ollama URL env-driven (`OLLAMA_URL`, default `http://127.0.0.1:11434`). |
-| llm-inference/test_run.py | Active / unblocked | POSTs each ticket to the **agent** `/process-ticket` (`AGENT_URL`, default `http://127.0.0.1:8000`) and extracts the flat 6-key 5W1H dict. **Writes observe-first fields (`action_taken`, `result_preview`, `grounded`) into each result row for per-ticket mechanism audit (2026-08-03).** No longer points at the gateway directly — that path was the 2026-07-31 retrieval diagnostic only. |
+| llm-inference/agent.py | Active / Generation & Metrics | FastAPI ReAct orchestrator on :8000 (`POST /process-ticket`). Calls Ollama (Qwen2.5-Coder-7B-Instruct Q4_K_M) over the SSH tunnel → WireGuard (§1.3.7 / §3.2.2) for the 5W1H + tool choice; calls the gateway `/v1/query` via `tools.search_sop` for RAG context; synthesis phase grounds `why`/`how` in the retrieved SOP. **Synthesis gate now uses `_is_err` (structured error check) so retrievals whose SOP text contains "Error" still reach synthesis — raised grounding from the 43.6–50.9% control band to a **94.5–96.4% treatment band** (2026-08-03).** **Update 2026-08-03: now implements `prometheus_client` to expose AI-pipeline metrics on `/metrics`; bound to `0.0.0.0` to allow Prometheus scraping over the Tailscale mesh.** **Update 2026-08-05: now also reads `OLLAMA_TEMPERATURE` / `OLLAMA_SEED` env knobs.** Ollama URL env-driven (`OLLAMA_URL`, default `http://127.0.0.1:11434`). |
+| llm-inference/test_run.py | Active / unblocked | POSTs each ticket to the **agent** `/process-ticket` (`AGENT_URL`, default `http://127.0.0.1:8000`) and extracts the flat 6-key 5W1H dict. **Writes observe-first fields (`action_taken`, `result_preview`, `grounded`) into each result row for per-ticket mechanism audit (2026-08-03).** **Update 2026-08-05: gains a `DATASET` env override + shape-tolerant loader so one harness grades either the synthetic golden set or the real-ticket set.** No longer points at the gateway directly — that path was the 2026-07-31 retrieval diagnostic only. |
 | llm-inference/grade_result.py | Active / two metrics | Reads `5w1h_output` (Fix A — was the never-written `output` key, the root cause of the eternal 0%). Reports **two** metrics: Complete 5W1H Schema (six keys present) and Grounded (`how` ≠ the `Pending SOP search` placeholder, constant `PLACEHOLDER_HOW`). Single source of truth for both definitions (handed to Ferdi for CI). |
 | llm-inference/prompts.py | Stable | `REACT_SYSTEM_PROMPT` defines the six lowercase keys + tool-selection directives; proven to elicit the shape. |
 | llm-inference/tools.py | Active / fixed | `search_sop` hits the live gateway NodePort 30082 `/v1/query` (was the deleted `rag-service:8000`). `execute_safe_cli` sandbox not deployed — non-critical; the agent catches the error and falls back to the analysis-phase 5W1H (still six keys). |
@@ -110,6 +125,10 @@ Nothing from the original five source files was deleted. Every table, checklist,
 | evaluation_results_{control2,treatment1_isnotnone,treatment2_errorgate}_0803.json | Archived | Experiment samples (2026-08-03): control band (24–28/55) + falsified `is not None` hypothesis + winning Error-gate treatment. |
 | Rust API ( /v1/query ) | Deployed, live / retrieval-only | NodePort 30082. Returns retrieved SOP text in `remediation_payload.proposed_fix` (no 5W1H). Reached directly over Tailscale for the retrieval diagnostic; reached by the agent's `search_sop` for RAG context. |
 | Qdrant DB ( qti_knowledge_base ) | Deployed, 83 points | 384-dim / Cosine, 18 SOPs chunked. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
+| llm-inference/collected_error_logs.json | **New** | Staging record of 14 raw error logs (real debugging) — the provenance for the real tickets |
+| data-pipeline/real_tickets.json | **New** | Stage 2 real-ticket eval set (REAL-001/002/003); flat array, same schema as golden |
+| llm-inference/evaluation_results_real_0804.json | **Archived** | Stage 2 real-ticket run (3/3 grounded, but 2 in wrong SOP) |
+| llm-inference/evaluation_results_seed42_0805.json | **Archived** | seed-42 / temp-0.8 reproducibility baseline (49/55) |
 
 > **Repo note (2026-08-02, post-commit):** rows above match the committed state — the five `llm-inference/` fixes and the real 55-ticket baseline are committed to `QTI-MAGANG` `main` as `ef915cf` and verified against the local checkout (see §0 item 10).
 
@@ -179,6 +198,18 @@ curl http://localhost:11434/api/tags                    # expect the model list
 
 Auth is key-only (§3.3.2): the laptop needs an ED25519 key in `ferdi`'s `~/.ssh/authorized_keys` (`ssh-keygen -t ed25519 -C "johan-hite"`; hand the `.pub` line to Ferdi). Without it, SSH closes at auth (`Connection closed by 100.94.99.125 port 22`, no password prompt). `agent.py` reads `OLLAMA_URL` (default `http://127.0.0.1:11434`), so with the tunnel up the default works. First Ollama call cold-loads the 4.7 GB model (20–60 s) — that is why `call_ollama` timeout is 300, not 45. This tunnel is a foreground dependency: closing the SSH session kills generation mid-run. For a reproducible/monitored pipeline the agent should eventually run on a WireGuard-side host (controller/Mac Mini) so the path stops depending on a laptop.
 
+##### 1.3.8 Real tickets can "ground" in the wrong SOP
+
+Retrieval returns the nearest neighbor, never nothing, so a ticket with no matching SOP still yields `grounded=True` — backed by an irrelevant SOP. The naive check can't tell. Real-data grounding needs a retrieval-correctness signal (or human review), not just `how != placeholder`. (Observed 2026-08-05: REAL-001/002 grounded in SOP-KIT-002 / SOP-DB-001 because no Ollama/Loki SOP exists; see §0 item 15.)
+
+##### 1.3.9 Temperature/seed trade-offs (Metal)
+
+temp 0.1 → synthesis JSON degeneration (45/55, 9 parse errors). temp 0.8 + fixed seed → reduces but does **not** eliminate run-to-run variance (49→48, different ticket sets) — llama.cpp on Metal isn't bit-deterministic. Report a band/threshold, not a single point. (2026-08-05 reproducibility runs; see §0 item 15.)
+
+##### 1.3.10 Synthesis parse failures are the last loss bucket
+
+With tool-selection and retrieval healthy (all `search_sop`, 0 empty), the remaining ungrounded tickets are synthesis JSON decode failures. Fix: retry synthesis on parse failure. (2026-08-05 clean run: 48/55, 7 synthesis parse failures; see §0 item 15.)
+
 #### 1.4 What Needs to Be Done (TODOs)
 
 **Platform Engineering Unblocks**
@@ -196,7 +227,7 @@ Auth is key-only (§3.3.2): the laptop needs an ED25519 key in `ferdi`'s `~/.ssh
 - [x] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence. *(Done 2026-08-03: Tier A = Complete + Grounded; Tier B = Complete + Ungrounded; Tier C = Incomplete/Escape. Handed off to Jep for dashboards).*
 - [x] Add agent-side observability hooks (JSON-decode failure, Ollama timeout, empty-retrieval counters). *(Done 2026-08-03: exposed 5 custom `qti_*` metrics on `/metrics`, §4.1.4).*
 - [ ] Finalize methodology documentation (drafted; two-stage maturity model).
-- [ ] (PROPOSED) Stage 2 real-data validation: error→eval loop (needs Loki access via Platform) + SOP knowledge-base expansion.
+- [ ] (IN PROGRESS) Stage 2 real-data validation: manual error→eval curation DONE (3 real tickets, coverage-gap found). Next: SOP knowledge-base expansion (author SOP-INF-003/004 → Farrel ingest → re-eval) + collect more real tickets. Automated Loki curator still pending Loki access.
 
 **DevOps (CI/CD & Prometheus)**
 - [ ] Integrate `grade_result.py` into a CI/CD pipeline (e.g., GitHub Actions) for automated schema regression testing on all new commits.
@@ -231,6 +262,17 @@ python -c "import json,collections as c; d=json.load(open('evaluation_results.js
 git add llm-inference/agent.py llm-inference/prompts.py llm-inference/tools.py llm-inference/test_run.py llm-inference/grade_result.py llm-inference/evaluation_results.json
 git commit -m "feat(llm-inference): wire agent + first real-data 5W1H baseline (100% schema / 43.6% grounded)"
 git push origin main
+```
+
+```powershell
+# --- Grade the real-ticket set instead of the synthetic one ---
+$env:DATASET = "..\data-pipeline\real_tickets.json"
+python test_run.py
+Remove-Item Env:DATASET
+
+# --- Reproducibility knobs (set in the agent's terminal before uvicorn) ---
+$env:OLLAMA_TEMPERATURE = "0.8"   # 0.1 degenerates synthesis JSON (see ablation)
+$env:OLLAMA_SEED = "42"
 ```
 
 ---
@@ -1216,6 +1258,26 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | **Ollama Remote Binding** | Jep / DevOps | Mac Mini (`100.79.30.90`) | ✅ **Resolved** | Rebound to `0.0.0.0:11434`; verified via `curl /api/tags`. |
 | **Scrape Target Agent Johan** | Jep / DevOps | Johan / Data Science | ✅ **Resolved** | Added `100.126.65.74:8000` to `prometheus-additional.yaml`. |
 | **`qti-agent` Deployment** | Ferdi / DevOps | K8s Cluster (ns `qti`) | ✅ **Resolved** | Pod running 1/1, HTTP server listening on `:8080`. |
+---
+
+## §8. Methodology Doc Draft (NEW)
+
+> Draft of the Data Science methodology document (referenced in §1.4: "Finalize methodology documentation (drafted; two-stage maturity model)"). Owned by Johan. Two-stage maturity model: Stage 1 = synthetic golden-set validation, Stage 2 = real-data validation.
+
+### Stage 1 — Synthetic Baseline
+
+55-ticket golden set (`golden_datasets.json`), graded on the two-metric grader (§1.3.6): schema completeness 55/55, grounded band 52–53/55 (94.5–96.4%, ≈95%). Stage 1 result is the committed HEAD `evaluation_results.json` (52/55) — the documented baseline (§1.6). Note: the synthetic set has a matching SOP for every ticket, so it never exercises the wrong-SOP-grounding failure mode found in Stage 2.
+
+### Stage 2 — Real-Data Validation
+
+Manual curation complete (3 real tickets): 1/3 correctly grounded, 2/3 grounded-in-wrong-SOP (no Ollama/Loki SOPs exist). **Finding:** the naive grounding metric is blind to retrieval correctness — it counts wrong-SOP grounding as grounded. SOP expansion (SOP-INF-003/004) is the remediation; validate on fresh tickets afterward. Reproducibility note: synthetic band 52–54/55; temp 0.1 ablation = 45/55 (JSON degeneration); seed 42 @ temp 0.8 = 49→48 (Metal non-determinism) → report mean ± range / threshold, never a single point.
+
+### Next / Pending
+
+- Author `SOP-INF-003` (Ollama unreachable over WireGuard) + `SOP-INF-004` (Loki datasource unreachable) → append to `RAG_Manual.md` → Farrel re-ingests (384-dim) → re-eval on the REAL set (§1.4).
+- Collect fresh real tickets to re-test generalization once REAL-001/002 become "seen" by the expanded SOP KB.
+- Automated error→eval curator from Loki still pending Loki access (see §1.4 / §4.2).
+
 ---
 
 *End of Master Guidebook. All five source reports are preserved in full above; only escaping artifacts were cleaned, the DevOps report was split by role (CI/CD vs. observability), and organizational headers/cross-references were added.*
