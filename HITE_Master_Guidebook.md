@@ -1052,7 +1052,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 6** | Alert Rules | ✅ | 14 alert infra + 2 business alert (QTI_OllamaTimeoutSpike & QTI_AgentParseErrorHigh) aktif & berstatus Normal di Grafana. |
 | **Phase 7** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
 | **Phase 8** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
-| **Phase 9** | Production Checklist | ❌ | Belum dimulai, menunggu Phase 8-9 tuntas. |
+| **Phase 9** | Production Checklist | ✅ | Audit infrastruktur, PVC storage, Pod health, GitOps sync, dan penyesuaian Contact Point Telegram Raw JSON. Stack observability Production-Ready.. |
 | **Phase 10** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
 
 ---
