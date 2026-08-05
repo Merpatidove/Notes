@@ -90,6 +90,11 @@ Nothing from the original five source files was deleted. Every table, checklist,
      - Final clean run: all 55 chose `search_sop`, 0 empty retrievals, but **7 synthesis parse failures** → 48/55. Dominant remaining loss = synthesis JSON decode failures → fix = **synthesis retry-on-parse-failure**.
      - CI guidance: gate on a **threshold** (e.g. `grounded ≥ 45/55`), not an exact number.
    - **Repo hygiene:** archives `evaluation_results_real_0804.json` + `evaluation_results_seed42_0805.json`; committed `agent.py`, `test_run.py`, `real_tickets.json`, `collected_error_logs.json` + archives. HEAD `evaluation_results.json` kept as the documented 52/55 synthetic Stage-1 baseline.
+16. **2026-08-05 — Additional Scrape Targets & Business Alert Rules Live (Jep).**
+    **Integrasi scrape target eksternal dan aturan alert bisnis AI pipeline berhasil diselesaikan dan terverifikasi secara E2E:**
+      - Additional Scrape Configs Live: Secret `prometheus-additional-configs` berhasil dibuat dan ditautkan ke Custom Resource Prometheus (`additionalScrapeConfigs`). Target `mac-mini-   external` (100.79.30.90:9100) dan `qti-agent-johan` (100.126.65.74:8000) aktif ter-scrape. Ingest metrik `qti_llm_tokens_total` (prompt: 34k, completion: 14k) terverifikasi real-time di Grafana Explore.
+      - PrometheusRule `qti-business-alerts` Deployed: Aturan alert bisnis AI pipeline (`QTI_OllamaTimeoutSpike` & `QTI_AgentParseErrorHigh`) berhasil dibuat dan di-label dengan `release: prometheus`. Rule berhasil direconcile oleh Prometheus Operator dan berstatus Normal (Hijau) di Grafana Alerting UI.
+      - Git Repository Synchronized: File `k8s/prometheus/prometheus-additional.yaml` dan `k8s/prometheus/qti-business-alerts.yaml` telah di-commit dan di-push ke repositori `Merpatidove/QTI-MAGANG` branch `main`.
 
 ---
 
@@ -948,6 +953,9 @@ AlertManager is deployed as a StatefulSet in `monitoring` namespace, pulling its
 | `HITE_ContainerCPUThrottled` | warning | > 50% of CFS periods throttled for 5m |
 | `HITE_DeploymentReplicasMismatch` | warning | spec replicas ≠ status replicas for 5m |
 | `HITE_ApiGatewayDown` | critical | api-gateway (`job="api-gateway"`) unreachable 2m |
+| `HITE_MacMiniDown` | critical | macmini (AI Inference Server) unreachable 2m |
+| `QTI_OllamaTimeoutSpike` | critical | rate(qti_agent_ollama_timeouts_total[5m]) > 0 |
+| `QTI_AgentParseErrorHigh` | Warning | rate(qti_agent_parse_errors_total[5m]) > 0.05 |
 
 Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5 menit").
 
@@ -1040,8 +1048,8 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 2** | Diagram Arsitektur | ⏭️ | Dilewati atas kesepakatan, tidak menghalangi progress. |
 | **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
 | **Phase 4** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
-| **Phase 5** | Dashboard | ⏳ | Node Exporter & K8s Monitoring siap. *Unblocked (2026-08-03)*. Business logic spec (Tier A/B/C) dan custom metrics dari agent DS sudah live di `100.126.65.74:8000/metrics`. Dashboard siap dibangun. |
-| **Phase 6** | Alert Rules | ⏳ | 13 alert infra + 1 log-based alert aktif. *Unblocked (2026-08-03)*. Alert bisnis AI pipeline bisa dibuat menggunakan metric `qti_agent_parse_errors_total` dan `qti_agent_ollama_timeouts_total`. |
+| **Phase 5** | Dashboard | ✅ | Dashboard Node Exporter, K8s, & AI Pipeline Section 2 terisi data metrik qti_* secara real-time. |
+| **Phase 6** | Alert Rules | ✅ | 14 alert infra + 2 business alert (QTI_OllamaTimeoutSpike & QTI_AgentParseErrorHigh) aktif & berstatus Normal di Grafana. |
 | **Phase 7** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
 | **Phase 8** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
 | **Phase 9** | Production Checklist | ❌ | Belum dimulai, menunggu Phase 8-9 tuntas. |
@@ -1066,20 +1074,21 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 - [ ] Kubernetes Events (Perlu tool tambahan, helm repo sempat error 404)
 
 ### 3. Application Layer
-
-- [x] **Qdrant**: Lengkap (ServiceMonitor + Alerting)
-- [✅] **Rust API (`api-gateway`)**: Metric infra ✅, log ✅, alert Down ✅
-- [⏳] **Mac Mini / Inference / LLM**: Belum tersentuh sama sekali *(2026-08-03: sebagian teratasi — AI-pipeline metrics dari agent DS live di `100.126.65.74:8000/metrics` via Tailscale, §4.1.4; alert `MacMiniDown` ditambahkan (zayfa); node Mac Mini sendiri belum di-instrumentasi.)*
-- [x] **Mac Mini Node Exporter:** Scraped via `prometheus-additional.yaml` (`100.79.30.90:9100`).
-- [x] **Ollama Remote Reachability:** Bound to `0.0.0.0:11434` (`*:11434`), verified via Tailscale.
-- [x] **Agent Johan Metrics:** Target `100.126.65.74:8000/metrics` registered and active.
-- [x] **Pod `qti-agent` Deployment:** Status `1/1 Running` in ns `qti`, port 8080 responding.
+ 
+- [x] Qdrant: Lengkap (ServiceMonitor + Alerting)
+- [x] Rust API (api-gateway): Metric infra ✅, log ✅, alert Down ✅
+- [x] Mac Mini / Inference / LLM: 
+      - Mac Mini Node Exporter: Scraped via prometheus-additional.yaml (100.79.30.90:9100) ✅
+      - Ollama Remote Reachability: Bound 0.0.0.0:11434, verified via Tailscale ✅
+      - Agent Johan Metrics: Scraped via prometheus-additional.yaml (100.126.65.74:8000/metrics) ✅
+      - Pod qti-agent Deployment: Status 1/1 Running in ns qti, port 8080 up ✅
 
 ### 4. Business Metrics
 
 - [⏳] **Metrics Target**: Tier A/B/C, Confidence, Schema Validation, Escape Hatch, Inference/Retrieval Time, Request Rate, Latency, Error Rate
 > *Status (2026-08-03): sebagian unblocked — gateway metrics (Farrel, §0 item 11) + agent `qti_*` metrics (Johan, §0 item 13) sudah live; dashboard/alert Phase 6/7 siap dibangun. Tier-based Confidence masih menunggu DS agent hooks + spec.*
-
+- ✅ Metrik qti_llm_tokens_total, qti_agent_parse_errors_total, & qti_agent_ollama_timeouts_total mengalir ke Prometheus & terakses di Grafana Explore.
+- ✅ Business Alerting: PrometheusRule `qti-business-alerts` aktif terintegrasi dengan Telegram alert receiver.
 ---
 
 ## BAGIAN 4 — Job Breakdown & Bantuan yang Dibutuhkan
