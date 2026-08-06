@@ -116,6 +116,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - **Grafana dashboards 29 → 28** labeled dashboard ConfigMaps (incl. `grafana-dashboard-hite-llm-retrieval`).
    - **Ollama binding reconciled to `0.0.0.0:11434`** (§0 item 14, 2026-08-04), superseding the `10.10.10.2:11434` text in §1.3.7 / §3.2.2 — noted in both places.
    - **NFS CSI controller 3/3 → 5/5** ready containers (the deployment's container count grew).
+20. **2026-08-06 — Platform Engineering §5 refreshed to 2026-08-05 machine state (Hilmi).** Reverse SSH Tunnel (`autossh` / `com.hite.tunnel.plist` via `launchctl`) formally deprecated and removed; resilience is now Tailscale mesh + WireGuard. Workers reach Mac Mini Ollama via the **mac-mini-ops** WireGuard tunnel `10.7.0.63` (firewall bypass `sudo iptables -I OUTPUT 7 -d 10.7.0.0/24 -j ACCEPT`; guidebook's `10.10.10.2` is the **controller-side** wg0 tunnel — verified live on the controller 2026-08-06, peer handshake active; §3.2.2 annotated to clarify the two tunnels' roles). Air-gap firewall (update-firewall-v2.sh) now also allows Tailscale CGNAT `100.64.0.0/10` + WireGuard `10.7.0.0/24`; `iptables-persistent` installed on worker-2. XOA hypervisor confirmation still open (§5.4).
 
 ---
 
@@ -215,7 +216,7 @@ Caveat: the grounding check is naive — an escape-hatch string like `"no matchi
 
 ##### 1.3.7 Ollama reachability from a Tailscale laptop — the SSH-tunnel door
 
-Ollama on the Mac Mini binds to `0.0.0.0:11434` (`OLLAMA_HOST=0.0.0.0:11434`, updated 2026-08-04, §0 item 14) — reachable over the WireGuard interface at `10.10.10.2:11434` and over Tailscale from the controller. *(Before 2026-08-04 it bound only to the WireGuard interface `10.10.10.2:11434`, §3.2.2; a Windows laptop on Tailscale therefore CANNOT reach Ollama directly — `curl http://100.79.30.90:11434` and worker-1 `http://100.68.225.41:11434` both refused. The working door is still a local-forward through the controller, which is on the WireGuard subnet at 10.10.10.1):*
+Ollama on the Mac Mini binds to `0.0.0.0:11434` (`OLLAMA_HOST=0.0.0.0:11434`, updated 2026-08-04, §0 item 14) — reachable over the WireGuard interface at `10.10.10.2:11434` and over Tailscale from the controller. *(Before 2026-08-04 it bound only to the WireGuard interface `10.10.10.2:11434`, §3.2.2; a Windows laptop on Tailscale therefore CANNOT reach Ollama directly — `curl http://100.79.30.90:11434` and worker-1 `http://100.68.225.41:11434` both refused. The working door is still a local-forward through the controller, which is on the WireGuard subnet at 10.10.10.1):* *(2026-08-06, §0 item 20: the workers themselves reach Ollama over the mac-mini-ops WireGuard tunnel at `10.7.0.63` — §5.1 / §5.3.1. The controller-side `10.10.10.2` door below stays the DS-laptop path.)*
 
 ```bash
 ssh -L 11434:10.10.10.2:11434 ferdi@100.94.99.125     # leave this session OPEN; it IS the tunnel
@@ -665,6 +666,8 @@ ssh ferdi@100.106.122.68  # worker-2
 
 Wireguard provides a dedicated encrypted tunnel between the controller VM and the Mac Mini for LLM traffic, avoiding the Tailscale DERP relay overhead.
 
+> **Note (2026-08-06, §0 item 20):** this `10.10.10.0/24` tunnel is the **controller-side** LLM path (verified live on the controller: `wg0` peer `10.10.10.2`, handshake active). The **workers** reach Mac Mini Ollama over the separate mac-mini-ops tunnel at `10.7.0.63` — the workers' air-gap firewall allows only `10.7.0.0/24`, so from a worker `10.10.10.2` is dropped (§5.3.1). The two tunnels serve different consumers; do not merge them.
+
 **Subnet:** `10.10.10.0/24`
 
 | Side | Wireguard IP | Wireguard Public Key |
@@ -734,7 +737,7 @@ sudo wg show wg0 | grep handshake
 - **Ollama binding** — *original guidance* was `OLLAMA_HOST=10.10.10.2:11434` (bind directly to the WireGuard interface; `0.0.0.0` on macOS binds to IPv6 `[::]` which may not accept IPv4 connections from the tunnel). **Rebound 2026-08-04 to `0.0.0.0:11434`** (§0 item 14) and verified reachable over WireGuard at `10.10.10.2:11434` and over Tailscale — see §3.2.2 table row / §1.3.7.
 - **macOS auto-start** — LaunchDaemon installed at `/Library/LaunchDaemons/com.wireguard.wg0.plist` with `KeepAlive`. Load with: `sudo launchctl load /Library/LaunchDaemons/com.wireguard.wg0.plist`.
 - **`wg-quick` on macOS** searches configs in order: `/etc/wireguard/`, `/usr/local/etc/wireguard/`, `/opt/homebrew/etc/wireguard/`. The config lives under the Homebrew prefix since that directory is user-writable.
-- **Pre-existing tunnel** — the Mac Mini also has a separate WireGuard tunnel **"mac-mini-ops"** (utun4, IP `10.7.0.63`, endpoint `117.54.250.111:51820`) managed by the macOS WireGuard app — connects to the ops infrastructure controller at `10.20.20.201`. Recovery script at `~/wg-recover.sh`. Do not confuse or reuse keys between tunnels.
+- **Pre-existing tunnel** — the Mac Mini also has a separate WireGuard tunnel **"mac-mini-ops"** (utun4, IP `10.7.0.63`, endpoint `117.54.250.111:51820`) managed by the macOS WireGuard app — connects to the ops infrastructure controller at `10.20.20.201`. Recovery script at `~/wg-recover.sh`. Do not confuse or reuse keys between tunnels. *(2026-08-06, §0 item 20: this mac-mini-ops tunnel is now also the workers' LLM path to Ollama — the workers' firewall whitelists `10.7.0.0/24` (§5.3.1), while the controller-side `10.10.10.2` tunnel above stays the DS SSH door.)*
 
 #### 3.3 Notable Observations
 
@@ -1248,7 +1251,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 
 ### K0rdent (k0s) Infrastructure & Network — Infrastructure & State Report
 
-**Date:** 2026-07-28
+**Date:** 2026-08-05
 **Owner:** Hilmi
 **Repo/Path:** On-Premises VM Cluster (worker-1: 10.20.20.202, worker-2: 10.20.20.200)
 
@@ -1256,74 +1259,60 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 
 | Component / File | Status | Access / Details |
 | :--- | :--- | :--- |
-| **K0s Worker Nodes** | Active | `worker-1` (10.20.20.202), `worker-2` (10.20.20.200). Controller on 10.20.20.201. |
-| **Private Container Registry** | Active | External: `10.20.20.202:32000`. Internal: `private-registry-svc:5000` (namespace `hite-prod`). |
-| **NFS StorageClass (`nfs-csi`)** | Bound | NFS Server: `10.20.20.143`, Path: `/upload/intern`. Binds PVC `qdrant-storage-qdrant-0` (namespace `qdrant`) and `pvc-uji-coba`. |
-| **Firewall (SOP-06 Air-Gapped)** | Active | Managed by `iptables-persistent`. Blocks 100% of outbound internet traffic (including `api.anthropic.com` and `8.8.8.8`). Traffic is allowed to subnets `10.20.20.0/24`, `10.244.0.0/16`, `10.96.0.0/12`, and `192.168.0.0/16`. |
-| **Mac Mini Interconnect** | Active (Tunnel) | Reverse SSH Tunnel forwards Mac Mini ports to `worker-1`. Port `19100` (Node Exporter metrics) and `11434` (Ollama/LLM). |
-| **Prometheus Telemetry** | Active | Authentication via `prometheus-scraper` ServiceAccount token over port `10250`. |
+| **K0s Worker Nodes** | Active | `worker-1` (Local: 10.20.20.202 / Tailscale: 100.68.225.41) and `worker-2` (Local: 10.20.20.200 / Tailscale: 100.106.122.68). |
+| **Firewall (Air-Gapped + VPN)** | Active | Managed by `iptables-persistent`. Blocks 100% of outbound public internet traffic. Explicitly allows routes to K0s subnets (`10.244.0.0/16`, `10.96.0.0/12`), local VM LAN (`10.20.20.0/24`), physical LAN (`192.168.0.0/16`), Tailscale (`100.64.0.0/10`), and WireGuard (`10.7.0.0/24`). |
+| **WireGuard Tunnel (LLM Link)** | Active | Mac Mini interface (`mac-mini-ops`) is bound to `10.7.0.63/24`. Exposes Ollama API directly to workers without Reverse SSH Tunnel. |
+| **Private Registry (`hite-prod`)** | Active | Runs Kubernetes-native `registry:2`. Accessible externally at `10.20.20.202:32000` and internally at `private-registry-svc.hite-prod:5000`. |
+| `update-firewall-v2.sh` | Deployed | Shell script on `worker-1` and `worker-2` defining the `iptables` DROP/ACCEPT rules. |
 
 #### 5.2 CI/CD & Automation (If applicable)
 
-- **Reverse Tunnel Daemon**: Automates the connection from the Mac Mini to the VM using macOS `launchctl` (`com.hite.tunnel.plist` with `644` permissions). This daemon will continuously attempt to reconnect (`KeepAlive`) and reroute port `9100` to `19100`, and `11434` to `11434` on the `worker-1` side if the SSH connection drops.
-- **Firewall Persistence**: Uses the `netfilter-persistent` and `iptables-persistent` packages to ensure air-gapped rules are automatically reloaded if `worker-1` reboots.
+- **Firewall Persistence:** Rules established via `update-firewall-v2.sh` are permanently saved using `netfilter-persistent save`. The `iptables-persistent` package automates the reloading of these strict routing tables upon any VM reboot, ensuring the air-gap and VPN bypasses remain intact.
+- **Network Tunneling:** The legacy Reverse SSH Tunnel (`autossh` / `com.hite.tunnel.plist` via `launchctl`) has been formally deprecated and removed. Connection resilience is now fully handled by Tailscale's mesh routing and WireGuard's internal handshake/keepalive.
 
 #### 5.3 Notable Observations & "Gotchas"
 
-##### 5.3.1 Service Mesh & DNS Mismatch (CRITICAL)
-- The blueprint specifies the Qdrant DNS target as `qdrant-service.qdrant.svc.cluster.local`, but those calls return `NXDOMAIN`.
-- The valid and currently active Service is `qdrant.qdrant.svc.cluster.local` (resolves to IP `10.108.156.131`).
-- **Gotcha**: The Data Engineering team (Farrel) needs to update the target URL variable in the `api-gateway` and `data-pipeline` repositories to `qdrant` to avoid internal connection failures.
+##### 5.3.1 Networking & Firewall Quirks
+- **WireGuard IP Mismatch (CRITICAL):** The Master Guidebook previously listed the Mac Mini Wireguard IP as `10.10.10.2`. However, the actual active `mac-mini-ops` interface is bound to `10.7.0.63`. Any `curl` to `10.10.10.2` will fail instantly with a connection refusal, whereas requests to `10.7.0.63` without proper firewall rules will freeze/timeout because the packets are silently dropped.
+- **Firewall Rule Injection:** To fix the timeout issue to Ollama, the rule `sudo iptables -I OUTPUT 7 -d 10.7.0.0/24 -j ACCEPT` had to be injected manually on the workers to ensure the WireGuard subnet bypassed the final `DROP` rule.
+- **`worker-2` Package Missing:** `worker-2` initially failed to save firewall rules because `iptables-persistent` was not installed. It required temporarily opening the firewall (`sudo iptables -P OUTPUT ACCEPT; sudo iptables -F OUTPUT`) to run `sudo apt update && sudo apt install iptables-persistent -y` before applying the air-gapped script.
 
-##### 5.3.2 Networking & Mac Mini Location
-- The Mac Mini is currently located at an employee's home with a local IP of `192.168.1.18`, not at the office (`192.168.20.163`).
-- **Gotcha**: Creating an official Network Bridge on the office router is currently impossible due to the physical network segment difference. The Reverse SSH Tunnel script is the only path connecting the LLM to the cluster.
-- **Gotcha**: The Windows `.ssh/config` configuration has been updated to use the mDNS `Qtis-Mac-mini.local` as the `ProxyJump` target to anticipate dynamic IP changes for the Mac Mini.
-
-##### 5.3.3 Security & Offline Image Loading
-- The `worker-1` machine rejects all `OUTPUT` traffic to the public internet.
-- **Gotcha**: You cannot run `docker pull` on `worker-1`. All new Docker images (such as `registry:2`) must be pulled from a local PC with internet access, exported via `docker save` to a `.tar` file, sent to `worker-1` using `scp`, and imported using `k0s ctr images import`.
+##### 5.3.2 Cluster & RBAC Architecture
+- **Promtail RBAC Limitation (Answering Jep):** Promtail requires explicit Role and RoleBinding configurations to access logs within specific namespaces. The initial restriction to `argocd`, `hite-prod`, `kube-system`, and `monitoring` was a baseline security posture to prevent cluster-wide log scraping by default. The `qti` namespace has now been whitelisted, allowing `api-gateway` logs to reach Loki.
+- **The Role of `hite-prod` Namespace:** This namespace is dedicated to hosting the Kubernetes-native Docker registry (`registry:2`). It acts as the internal image store for the cluster, completely separate from the host-level registry on the controller.
+- **XOA Hypervisor Status:** The physical topology remains unverified. We must confirm via Xen Orchestra (XOA) if the Mac Mini is the actual physical hypervisor hosting `worker-1`, `worker-2`, and the controller.
 
 #### 5.4 What Needs to Be Done (TODOs)
 
-- [x] Install k0s Worker Nodes (`worker-1`, `worker-2`) and clean up the old K3s installation.
-- [x] Create the Private Container Registry (`10.20.20.202:32000`).
-- [x] Provision NFS-based Persistent Storage (`nfs-csi`).
-- [x] Execute SOP-06 Firewall Lockdown (Air-Gapped Absolute).
-- [x] **Dev Team Unblocks**: Farrel needs to revise the Rust API code to use the `qdrant.qdrant.svc.cluster.local` DNS URL target instead of `qdrant-service`. *(Done: Farrel implemented a fallback to http://qdrant.qdrant.svc.cluster.local:6333 in api-gateway/src/clients/qdrant.rs)*
-- [ ] **Infra Improvements**: Replace the Reverse SSH Tunnel with an official Network Bridge from the `10.20.20.0/24` block to the Mac Mini (Ports `11434` and `9100`), once the Mac Mini is returned to the physical office infrastructure.
-- [ ] **Infra Improvements**: Request the office network admin to apply a DHCP Reservation (Static IP) for the Mac Mini's MAC Address (`192.168.20.163`) when the device returns.
+**Infra Improvements & Verification**
+- [x] Deprecate Reverse SSH Tunnel and shift Mac Mini LLM traffic to WireGuard / Tailscale.
+- [x] Apply Air-Gapped Firewall (SOP-06) on `worker-1` and `worker-2` via `update-firewall-v2.sh`.
+- [x] Whitelist Tailscale CGNAT (`100.64.0.0/10`) and WireGuard (`10.7.0.0/24`) subnets in `iptables`.
+- [x] Install `iptables-persistent` on `worker-2` to ensure firewall rule survival across reboots.
+- [ ] Confirm with Ferdi via XOA (`Home` → `Hosts`) if the Mac Mini is the physical hypervisor host for the cluster VMs.
+
+**Long-Term**
+- [ ] Coordinate with office network admin for a dedicated Network Bridge and DHCP Reservation (Static IP) once the Mac Mini is physically returned to the office.
 
 #### 5.5 Quick Reference (Cheat Sheet)
 
-**Check Private Registry status from worker-1**
 ```bash
-curl -X GET http://10.20.20.202:32000/v2/_catalog
-```
+# Verify Air-Gapped Firewall is actively blocking public internet (Expect: Timeout/100% Loss)
+curl --connect-timeout 5 -I https://api.anthropic.com
+ping -c 3 8.8.8.8
 
-**Push an image to the Private Registry locally**
-```bash
-sudo docker push 10.20.20.202:32000/<image-name>:<tag>
-```
+# Verify Tailscale Mesh routing is allowed (Expect: 0% packet loss)
+ping -c 3 100.79.30.90
 
-**Check Mac Mini telemetry via Reverse Tunnel from within worker-1**
-```bash
-curl -s -I http://10.20.20.202:19100/metrics
-```
+# Verify WireGuard Tunnel to Mac Mini Ollama is allowed and responsive (Expect: JSON model list)
+curl -m 5 -s http://10.7.0.63:11434/api/tags
 
-**Test Qdrant DNS resolution from within the Kubernetes cluster**
-```bash
-kubectl run -it --rm test-dns --image=busybox:1.28 -n hite-prod -- nslookup qdrant.qdrant.svc.cluster.local
-```
+# View active iptables OUTPUT rules to ensure VPN bypasses are positioned before the DROP rule
+sudo iptables -L OUTPUT -v -n --line-numbers
 
-**Force restart the Reverse SSH Tunnel service (Run in Mac Mini terminal)**
-```bash
-launchctl unload ~/Library/LaunchAgents/com.hite.tunnel.plist && launchctl load ~/Library/LaunchAgents/com.hite.tunnel.plist
-```
-
-**Pull Kubelet metrics using a Bearer Token (Run on worker-2 / Jep)**
-```bash
-curl -k -H "Authorization: Bearer $TOKEN" https://10.20.20.202:10250/metrics
+# Manually inject the WireGuard subnet bypass if it is missing (Place it before the final DROP)
+sudo iptables -I OUTPUT 7 -d 10.7.0.0/24 -j ACCEPT
+sudo netfilter-persistent save
 ```
 
 ---
@@ -1336,7 +1325,7 @@ curl -k -H "Authorization: Bearer $TOKEN" https://10.20.20.202:10250/metrics
 
 | Source | What it says |
 |---|---|
-| Platform Eng §5.1 / §5.3.2 | Mac Mini is currently **at an employee's home** (`192.168.1.18`), not the office (`192.168.20.163`). Connected to `worker-1` only via a **Reverse SSH Tunnel** (ports `19100`→Node Exporter, `11434`→Ollama). Office network bridge is currently impossible due to the network segment mismatch. SSH config uses mDNS `Qtis-Mac-mini.local` as a ProxyJump target to survive IP changes. |
+| Platform Eng §5.1 / §5.3.2 | Mac Mini is currently **at an employee's home** (`192.168.1.18`), not the office (`192.168.20.163`). Connected to `worker-1` only via a **Reverse SSH Tunnel** (ports `19100`→Node Exporter, `11434`→Ollama). Office network bridge is currently impossible due to the network segment mismatch. SSH config uses mDNS `Qtis-Mac-mini.local` as a ProxyJump target to survive IP changes. *(Superseded 2026-08-05 — Reverse SSH Tunnel deprecated and removed; the Mac Mini now connects to the workers via the mac-mini-ops WireGuard tunnel `10.7.0.63` (§5.3.1); office-bridge/DHCP plan still open, §5.4.)* |
 | Platform Eng §5.4 (TODO) | Long-term plan is the *opposite* of full-hosting: **replace** the tunnel with an office network bridge and get the Mac Mini a DHCP reservation *once it returns to the office* — i.e. the Mac Mini was planned as a **satellite inference box**, not the primary host. |
 | Data Engineering §2.3.3 | The Mac Mini is described as "**now the full host** (Ollama + Qwen)" and is reachable over **Tailscale at `100.79.30.90`** — a different, VPN-based path than the SSH tunnel Platform Eng describes. |
 | Data Engineering §2.3.8 | Mac Mini is **Apple Silicon (ARM/aarch64)** — first `cargo build` of `data-pipeline` there recompiles `fastembed`/onnxruntime and is slow (minutes) but works. |
@@ -1349,7 +1338,7 @@ curl -k -H "Authorization: Bearer $TOKEN" https://10.20.20.202:10250/metrics
 ### 6.2 Open contradictions to resolve before committing to full-hosting
 
 1. **Is the k0s cluster running on the Mac Mini, or does the Mac Mini just host inference (Ollama/Qwen) alongside a separate cluster on VM IPs 10.20.20.201/202/200?** Platform Eng and DevOps CI/CD reports both describe the cluster living on those VM IPs with **no HA** and a **single point of failure** — this reads as physically separate hardware from the Mac Mini. But the Data Scientist report and the "XOA hypervisor" question both suggest the Mac Mini might *be* that physical box underneath. This is the single biggest open question and should be confirmed with Ferdi/Hilmi before any full-hosting plan is finalized.
-2. **Two different network paths to the Mac Mini exist simultaneously and neither team seems aware of the other's:** Platform Eng relies on a **Reverse SSH Tunnel** (`launchctl`-managed, ports 19100/11434) while Data Engineering relies on **Tailscale** (`100.79.30.90`). **Update 2026-07-30:** a third path has been added — **WireGuard over Tailscale** (`10.10.10.0/24`, §3.2.2) — which provides a dedicated encrypted tunnel between the VM and Mac Mini for LLM traffic (5x latency improvement over Tailscale DERP relay). This is now the recommended path for inference traffic. The Reverse SSH Tunnel remains in place for Node Exporter metrics and legacy access.
+2. **Two different network paths to the Mac Mini exist simultaneously and neither team seems aware of the other's:** Platform Eng relies on a **Reverse SSH Tunnel** (`launchctl`-managed, ports 19100/11434) while Data Engineering relies on **Tailscale** (`100.79.30.90`). **Update 2026-07-30:** a third path has been added — **WireGuard over Tailscale** (`10.10.10.0/24`, §3.2.2) — which provides a dedicated encrypted tunnel between the VM and Mac Mini for LLM traffic (5x latency improvement over Tailscale DERP relay). This is now the recommended path for inference traffic. The Reverse SSH Tunnel remains in place for Node Exporter metrics and legacy access. *(Update 2026-08-05 — Reverse SSH Tunnel formally removed; workers reach Ollama via mac-mini-ops `10.7.0.63` (§5.1 / §5.3.1); the controller-side `10.10.10.0/24` tunnel remains as the DS SSH door, §3.2.2.)*
 3. **Location is still in flux.** As of Platform Eng's report the Mac Mini was at an employee's home, not the office — full-hosting plans should nail down the physical location first, since it changes which network path (tunnel vs. Tailscale vs. office LAN) is even viable.
 4. **ARM build implications for full-hosting:** if `data-pipeline`, `api-gateway`, and any future services also move onto the Mac Mini, expect the same first-build ARM recompilation tax described in Data Engineering §2.3.8 for any new Rust crate, and check that all Docker images used cluster-wide have `linux/arm64` variants — the current setup assumes `x86_64`-style workers.
 
