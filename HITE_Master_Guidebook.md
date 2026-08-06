@@ -135,6 +135,9 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - **Empty-KB root cause (for the record):** the v1.1 auto-reset's delete+recreate *succeeded* (fresh empty collection at ~10:56), but the refill upsert failed at that exact moment (pod rescheduled to worker-2, stuck in `ImagePullBackOff` / Raft timing out) — so the collection sat at 0 points. Not a data-model problem; bad infra timing.
     - **Infra follow-up (handed to Ferdi):** Qdrant Raft consensus remains slow on heavy writes post-restart (likely NFS WAL fsync latency on the `10.20.20.201` share). DE workaround in place (smart reset); DevOps to check `kubectl logs qdrant-0 -n qdrant` for Raft warnings / NFS latency and consider local (non-NFS) WAL storage or a tuned consensus timeout.
     - **DS unblocked:** Tyo notified the KB is ready for the REAL-003 probe + 8-ticket Stage 2 re-eval (§8.4 post-ingest re-eval pending).
+24. **2026-08-06 — Mac Mini: Tailscale admin SSH + Ollama auto-start on boot.** Two Mac-side changes, verified live from the controller:
+   - **Tailscale admin access:** `qtis-mac-mini` (`100.79.30.90`) is now a **tagged device (`tag:server`)**. Root cause of the lockout before the fix: tagging removes a node from the default `autogroup:self` SSH rule, so no rule matched it and everyone (including the owner) was rejected. Fixed via the Tailscale Admin API by adding to the `ssh` rules: `{"action":"accept","src":["autogroup:admin"],"dst":["tag:server"],"users":["autogroup:nonroot","root"]}`; the existing `autogroup:self` rule was kept, and the existing `* → *` grants already permit port 22. Verified 2026-08-06 from the controller: `tailscale status` shows the node tagged (`tagged-devices`) + active; TCP to `100.79.30.90:22` reachable over Tailscale; `100.79.30.90:11434` reachable.
+   - **Ollama auto-start (`com.ollama` LaunchDaemon at `/Library/LaunchDaemons/com.ollama.plist`):** `/usr/local/bin/ollama serve` starts at boot and stays alive (`RunAtLoad` + `KeepAlive`), runs as user `qti` (group `staff`), cwd `/Users/qti`, `OLLAMA_HOST=0.0.0.0:11434`, logs `/Users/qti/.ollama/logs/launchd.{out,err}.log`. Previously Ollama had to be started manually after a Mac reboot. Verified 2026-08-06: `/api/tags` HTTP 200 on Tailscale `100.79.30.90:11434` and WireGuard `10.10.10.2:11434`; WireGuard handshake active.
 
 ---
 
@@ -234,7 +237,7 @@ Caveat: the grounding check is naive — an escape-hatch string like `"no matchi
 
 ##### 1.3.7 Ollama reachability from a Tailscale laptop — the SSH-tunnel door
 
-Ollama on the Mac Mini binds to `0.0.0.0:11434` (`OLLAMA_HOST=0.0.0.0:11434`, updated 2026-08-04, §0 item 14) — reachable over the WireGuard interface at `10.10.10.2:11434` and over Tailscale from the controller. *(Before 2026-08-04 it bound only to the WireGuard interface `10.10.10.2:11434`, §3.2.2; a Windows laptop on Tailscale therefore CANNOT reach Ollama directly — `curl http://100.79.30.90:11434` and worker-1 `http://100.68.225.41:11434` both refused. The working door is still a local-forward through the controller, which is on the WireGuard subnet at 10.10.10.1):* *(2026-08-06, §0 item 20: the workers themselves reach Ollama over the mac-mini-ops WireGuard tunnel at `10.7.0.63` — §5.1 / §5.3.1. The controller-side `10.10.10.2` door below stays the DS-laptop path.)*
+Ollama on the Mac Mini binds to `0.0.0.0:11434` (`OLLAMA_HOST=0.0.0.0:11434`, updated 2026-08-04, §0 item 14) — reachable over the WireGuard interface at `10.10.10.2:11434` and over Tailscale from the controller. *(Before 2026-08-04 it bound only to the WireGuard interface `10.10.10.2:11434`, §3.2.2; a Windows laptop on Tailscale therefore CANNOT reach Ollama directly — `curl http://100.79.30.90:11434` and worker-1 `http://100.68.225.41:11434` both refused. The working door is still a local-forward through the controller, which is on the WireGuard subnet at 10.10.10.1):* *(2026-08-06, §0 item 20: the workers themselves reach Ollama over the mac-mini-ops WireGuard tunnel at `10.7.0.63` — §5.1 / §5.3.1. The controller-side `10.10.10.2` door below stays the DS-laptop path.)* *(2026-08-06, §0 item 24: Ollama now auto-starts on boot (`com.ollama` LaunchDaemon) and the Mac is tailnet-admin-accessible (`tag:server`, admin SSH ACL) — the SSH local-forward door below remains the documented path, but for admin users it may become optional.)*
 
 ```bash
 ssh -L 11434:10.10.10.2:11434 ferdi@100.94.99.125     # leave this session OPEN; it IS the tunnel
@@ -736,7 +739,8 @@ PersistentKeepalive = 25
 | Private key | `/opt/homebrew/etc/wireguard/mm-vm-private.key` |
 | Public key | `W/ZjEHMjrkDq+rv3QJxZieL7MZlz6guijDN0i+RSmwA=` |
 | Ollama binding | `0.0.0.0:11434` (`OLLAMA_HOST=0.0.0.0:11434`; reachable on the WireGuard iface at `10.10.10.2:11434`. Updated 2026-08-04 — was `10.10.10.2:11434` only) |
-| Auto-start | LaunchDaemon `/Library/LaunchDaemons/com.wireguard.wg0.plist` |
+| Auto-start | WireGuard LaunchDaemon `/Library/LaunchDaemons/com.wireguard.wg0.plist` **+** Ollama LaunchDaemon `com.ollama` (`/usr/local/bin/ollama serve`, RunAtLoad + KeepAlive, user `qti`/group `staff`, `OLLAMA_HOST=0.0.0.0:11434`, added 2026-08-06 — §0 item 24) |
+| Tailscale access | Node tagged **`tag:server`**; admin SSH via Tailscale SSH ACL (`autogroup:admin` → `tag:server`, users `autogroup:nonroot` + `root`); SSH `:22` verified reachable 2026-08-06 (§0 item 24) |
 | Latency (VM↔Mac Mini) | 26-30ms, 0% loss |
 | Mac Mini hostname | `Qtis-Mac-mini.local` (mDNS), Tailscale IP `100.79.30.90` |
 
@@ -1361,6 +1365,7 @@ sudo netfilter-persistent save
 | DevOps Prometheus/Grafana/Loki roadmap, Phase 8 (§4.4) | "**Blocked total** oleh masalah routing network Mac Mini" — the AI pipeline monitoring phase cannot start until Mac Mini networking is resolved. |
 | DevOps Prometheus/Grafana/Loki roadmap, Ferdi's action item (§4.4) | Ferdi is asked to confirm with XOA (the hypervisor manager) whether the **Mac Mini is literally the physical hypervisor host** (`Home → Hosts` in XOA) — if true, the whole networking problem gets much simpler. **This question appears unresolved in all five reports.** |
 | DevOps Prometheus/Grafana/Loki roadmap, Jep's action item (§4.4) | "Keputusan Pending: Tentukan strategi solusi network Mac Mini (**Dual-NIC Hilmi** atau opsi alternatif)" — a dual-NIC approach from Hilmi is on the table but not decided. |
+| Live state 2026-08-06 (§0 item 24) | Mac Mini is now a **tagged Tailscale device (`tag:server`)** with admin SSH via Tailscale SSH ACL (`autogroup:admin` → `tag:server`; SSH `:22` verified reachable). **Ollama auto-starts at boot** via the `com.ollama` LaunchDaemon (`/usr/local/bin/ollama serve`, user `qti`, `OLLAMA_HOST=0.0.0.0:11434`) — verified serving on Tailscale `100.79.30.90:11434` and WireGuard `10.10.10.2:11434`. |
 
 ### 6.2 Open contradictions to resolve before committing to full-hosting
 
