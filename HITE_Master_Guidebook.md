@@ -122,6 +122,12 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - `qdrant-0` recreated → **1/1 Running on worker-2**; `healthz` check passed; collection `qti_knowledge_base` green (384-dim/Cosine, 4 segments). Controller cannot route to pod IPs (`10.244.3.185` refused) — use `kubectl port-forward` for API access.
    - **EMPTY-KB finding:** `qti_knowledge_base` reports **points_count = 0** (was 110 per §0 items 17/19). On the NFS backing store (`pvc-cd0fd51e…`, PV server `10.20.20.201`, share `/mnt/k8s-nfs`) the collection dir was recreated fresh at **2026-08-06 10:56–10:57 WIB** with new empty segment dirs; `.deleted` is empty and no snapshot exists anywhere — the 110 points are **not recoverable from disk**. Timing matches the data-pipeline v1.1 auto-reset (§0 item 17) and pre-dates the restart, i.e. likely intentional pre-ingestion cleanup, not outage data loss. Impact: DS retrieval returns no matches until re-ingestion. **Action:** Farrel re-ingests the RAG_Manual v1.1 72-point set (qdrant now Running; previously blocked).
    - **NFS server reconciliation:** the qdrant PV points at NFS server `10.20.20.201` (controller), not the `10.20.20.143 /upload/intern` referenced in older §5 text — reconcile §5 NFS notes.
+22. **2026-08-06 — CI/CD: local registry fixed + pull-through proxy, ghcr.io mirror, data-pipeline CI; §3 refreshed.** The §3 refresh surfaced the local registry was actually crash-looping, not Running. All infra fixes applied 2026-08-06:
+   - **Local registry `10.20.20.201:5000` fixed (was DOWN ~7 days).** Root cause: the `registry:2` container bind-mounted `/tmp/certs:/certs` and the self-signed cert in `/tmp` had been wiped → `fatal: open /certs/registry.crt: no such file or directory`, crash-loop. Fix: regenerated a self-signed cert (SAN `IP:10.20.20.201`, 10y) at the **persistent** path `/etc/docker/registry/` (never `/tmp` again), recreated the container with `-p 5000:5000`, the existing data volume (legacy images preserved: `busybox`, `curlimages/curl`, `grafana/loki`, `grafana/promtail`, `jaegertracing/jaeger`, `prometheus/alertmanager`), and **`REGISTRY_PROXY_REMOTEURL=https://ghcr.io`** (pull-through proxy mode). Redistributed the new CA to `/etc/docker/certs.d/10.20.20.201:5000/ca.crt` (controller) and `/etc/k0s/containerd/certs.d/10.20.20.201:5000/ca.crt` (both workers). Verified: catalog served; workers reach it; container can reach ghcr.io. **Caveat:** registry:2 proxy mode ignores pushes — `10.20.20.201:5000` is now a pull-through cache only; the in-cluster `hite-prod` registry (`10.20.20.202:32000`) remains the cluster push target.
+   - **ghcr.io pull gap fixed (next CI deploy would otherwise have failed).** Workers' containerd had no mirror for ghcr.io and cannot reach it (air-gap), so the next api-gateway image would `ImagePullBackOff` exactly like qdrant. Fix: added `/etc/k0s/containerd/certs.d/ghcr.io/hosts.toml` on both workers → mirror `server = "https://10.20.20.201:5000"` (+CA). Workers now pull `ghcr.io/merpatidove/...` through the local proxy, which fetches/caches from ghcr.io. **Verified end-to-end 2026-08-06:** a pod on worker-1 with `imagePullPolicy: Always` pulled `ghcr.io/merpatidove/qti-api-gateway:e40ba85` successfully (33 MB, 4.5 s) via the mirror. Argo CD manifests/CI are unchanged — CI still publishes to ghcr.io.
+   - **data-pipeline CI added.** New `.github/workflows/data-pipeline.yml` (trigger: push to `data-pipeline/**` + `workflow_dispatch`): `cargo check` → build+push `ghcr.io/merpatidove/qti-data-pipeline:<sha>` (GitHub Actions only; no cluster deploy). New `data-pipeline/Dockerfile` (multi-stage, bakes all-MiniLM-L6-v2 via `--download-only`, mirrors api-gateway pattern). To support that, `data-pipeline/src/main.rs` gained a `--download-only` guard + `EMBED_CACHE_DIR` support (identical to api-gateway's pattern). Ingest still runs manually (`cd data-pipeline && cargo run`, §2.3.10 workaround); a cluster CronJob is a documented follow-up.
+   - **§3 refreshed** to match: local-registry row corrected, pipeline flow documents the mirror step, §3.4.1/§3.4.2 checkboxes closed (secrets, `.gitignore`, smoke-test scope), rag-service rows struck, §3.4.3 `data-pipeline CI/CD` closed, quick-ref gotcha added (`curlimages/curl` test pods fail on air-gapped workers — use images from the local registry/mirror).
+   - **Still open:** `curlimages/curl`-style `kubectl run` tests need a pre-loaded/mirrored image (documented in §3.5); legacy images on the proxy registry should eventually be re-pushed to `hite-prod` `32000`.
 
 ---
 
@@ -546,7 +552,7 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 
 ### QTI RAG Pipeline — CI/CD, Argo CD & Cluster Infrastructure Report
 
-**Date:** 2026-07-17 (Updated 2026-07-30 — ServiceMonitors, Argo CD TLS, Tailscale access documented; Updated 2026-07-31 — `/v1/query` wired, NodePort 30082, model baked into image)
+**Date:** 2026-07-17 (Updated 2026-07-30 — ServiceMonitors, Argo CD TLS, Tailscale access documented; Updated 2026-07-31 — `/v1/query` wired, NodePort 30082, model baked into image; Updated 2026-08-06 — local registry rebuilt as ghcr pull-through proxy, ghcr mirror on workers, data-pipeline CI)
 **Cluster:** k0s v1.36.2+k0s (Debian 13 trixie)
 **Repo:** [Merpatidove/QTI-MAGANG](https://github.com/Merpatidove/QTI-MAGANG)
 
@@ -561,10 +567,12 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 | **api-gateway** | 1/1 Running, Healthy | NodePort **30082** — `http://100.106.122.68:30082/v1/health` returns `{"status":"ok"}`; `POST /v1/query` returns real SOP data. (Was ClusterIP `api-gateway.qti.svc:8080`.) |
 | **NFS CSI driver** | 5/5 controller, 2/2 node pods | k0s path: `/var/lib/k0s/kubelet` |
 | **Ingress-NGINX** | 1/1 Running (LoadBalancer) | NodePort 31084 (HTTP), 30616 (HTTPS) — routes to Grafana, Prometheus, AlertManager, ArgoCD. *(Grafana/Prometheus/AlertManager themselves are Jep's — see §4.)* |
-| **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
+| **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — **pull-through proxy for ghcr.io** (recreated 2026-08-06, cert now at `/etc/docker/registry/`, was crash-looping on a wiped `/tmp` cert — §0 item 22) |
 | **hite-prod Registry** | 1/1 Running (Deployment) | `private-registry-svc.hite-prod:5000` (NodePort 32000) — Kubernetes-native registry:2 |
 
 > **Note:** the original combined report also listed Prometheus/Grafana, Loki, Promtail, and AlertManager in this same table — those rows are preserved in §4.1 (Jep's section) instead of being duplicated here.
+
+> **Note (2026-08-06):** workers pull `ghcr.io/merpatidove/...` images **through the local registry** — `/etc/k0s/containerd/certs.d/ghcr.io/hosts.toml` mirrors ghcr.io → `https://10.20.20.201:5000` (both workers). Argo CD manifests still reference ghcr.io; the proxy fetch-through-caches and serves the blobs to the air-gapped workers (§0 item 22).
 
 ##### 3.1.1 CI/CD Pipeline (Working End-to-End)
 
@@ -576,6 +584,7 @@ Push to main (api-gateway/**)
   -> Docker smoke test: /v1/health must return 200; POST /v1/query must return remediation_payload (extended 2026-07-31)
   -> git pull --rebase then commit updated image tag to kustomization.yaml [skip ci] (fix for run #7, see below)
   -> Argo CD auto-syncs to cluster
+  -> Workers pull the new image THROUGH the local registry (ghcr.io mirror -> 10.20.20.201:5000 proxy -> ghcr.io; air-gapped workers can't reach ghcr.io directly, added 2026-08-06)
   -> Pod restarts with new image, health check passes
 ```
 
@@ -583,6 +592,8 @@ Push to main (api-gateway/**)
 - **Rollback:** manual via `rollback.yml` — specify a previous image SHA/tag to revert instantly.
 - **Known failure (2026-07-31):** CI run #7 built the image and passed smoke for commit `10898a1` but **never deployed** — the commit-back push failed because `main` had moved mid-run, so Argo CD stayed on old tag `1f34091`. Fixed with `git pull --rebase` before the tag commit-back. Runs #8/#9 green.
 - **Manual trigger:** `workflow_dispatch` added 2026-07-31 (was push-only).
+- **Image distribution (2026-08-06):** workers' containerd mirrors `ghcr.io` → `10.20.20.201:5000` (which runs registry:2 in `REGISTRY_PROXY_REMOTEURL=https://ghcr.io` mode). A new build therefore reaches workers automatically. Verified live with a forced-pull test on worker-1 (§0 item 22). Fallback for non-mirrored images (e.g. qdrant): manual `docker save`/`load` sync per §0 item 21.
+- **data-pipeline CI (2026-08-06):** `data-pipeline/**` push now also builds `ghcr.io/merpatidove/qti-data-pipeline:<sha>` (`cargo check` → build/push only; ingestion still runs manually via `cd data-pipeline && cargo run`, §2.3.10).
 
 **Last successful run:** Image `ghcr.io/merpatidove/qti-api-gateway:a0b4bec` (bakes `all-MiniLM-L6-v2` under `/opt/fastembed`), deployed 2026-07-31; health check passing at NodePort 30082. *(Deployed tag has since moved forward with each CI run — current tag `485024c`, §2.1; `a0b4bec` is the historical embedding-model milestone.)*
 
@@ -599,17 +610,16 @@ Push to main (api-gateway/**)
 | `api-gateway/k8s/servicemonitor.yaml` | Prometheus ServiceMonitor, scrapes `/metrics` every 15s | Working |
 | `.github/workflows/ci.yml` | Build → `cargo check` → push → smoke (`/v1/health` + `POST /v1/query`) → commit-back via `git pull --rebase` (concurrency gate, `workflow_dispatch`) | Working |
 | `.github/workflows/rollback.yml` | Manual rollback to any previous image tag/SHA | Working |
-| `rag-service/Cargo.toml` | RAG inference service (axum 0.7, tokio, serde) | Scaffold |
-| `rag-service/src/main.rs` | Axum server on port 3000, `POST /api/v1/ticket` | Scaffold |
-| `rag-service/src/models.rs` | `TicketRequest`, `InferenceResponse` structs | Scaffold |
-| `rag-service/src/routes.rs` | Ticket handler (placeholder, logs ticket ID) | Scaffold |
-| `k8s/argocd/application.yaml` | Argo CD Application CRD | Working |
+| `.github/workflows/data-pipeline.yml` | `data-pipeline/**` push → `cargo check` → build+push `ghcr.io/merpatidove/qti-data-pipeline:<sha>` (added 2026-08-06; no cluster deploy) | Working |
+| `data-pipeline/Dockerfile` | Multi-stage Rust build, bakes `all-MiniLM-L6-v2` via `--download-only` into `/opt/fastembed` (added 2026-08-06) | Working |
+| `k8s/argocd/application.yaml` | Argo CD Application CRD (`qti-api-gateway`, repo `QTI-MAGANG`, path `api-gateway/k8s`, ns `qti`) | Working |
+| `k8s/argocd/ingress.yaml` | Argo CD Ingress (nginx, `argocd.hite.local`, TLS `argocd-tls`) | Working |
 
-> **Note (per §2.3.5 above, from Data Engineering):** the `rag-service/*` rows in this table are now **stale** — the folder has since been deleted from the repo. Kept here unedited as the original report recorded it.
+> **Note (2026-08-06):** the `rag-service/*` rows below were **struck** — the folder was deleted from the repo long ago (§2.3.5); kept here as the original report recorded it.
 
-##### 3.1.3 rag-service (New Component)
+##### 3.1.3 rag-service (New Component — DELETED)
 
-A separate Rust/Axum service (`rag-service/`) has been scaffolded as the RAG inference engine:
+A separate Rust/Axum service (`rag-service/`) was scaffolded as the RAG inference engine. **The `rag-service/` folder was deleted from the repo** (replaced by the retrieval-only gateway architecture, §1.3.5) — this subsection is preserved as the original report recorded it:
 
 - **Package name:** `inference-engine` (v0.1.0)
 - **Endpoint:** `POST /api/v1/ticket` on port 3000
@@ -769,27 +779,27 @@ The controller has all ports open (NFS, k0s API, Docker Swarm). Consider adding 
 
 ##### 3.3.5 Local Docker Registry
 
-A local HTTPS Docker registry is running on the controller for storing deployment images:
+A local HTTPS Docker registry runs on the controller. **Since 2026-08-06 it is a pull-through proxy for ghcr.io** (rebuilt after the original crash-looped ~7 days on a wiped `/tmp` cert — see §0 item 22):
 - **Address:** `10.20.20.201:5000` (HTTPS, self-signed cert for IP 10.20.20.201)
-- **Cert files:** `/tmp/certs/registry.crt`, `/tmp/certs/registry.key`
-- **Docker trust cert:** `/etc/docker/certs.d/10.20.20.201:5000/ca.crt`
-- **Containerd trust:** Workers configured via `/etc/k0s/containerd/certs.d/10.20.20.201:5000/hosts.toml` and `/etc/k0s/containerd.d/registry-certs.toml`
+- **Cert files (PERSISTENT, not `/tmp`):** `/etc/docker/registry/registry.crt`, `/etc/docker/registry/registry.key` (regenerated 2026-08-06; the old `/tmp/certs/` location caused the outage)
+- **Docker trust cert:** `/etc/docker/certs.d/10.20.20.201:5000/ca.crt` (updated to the new cert 2026-08-06)
+- **Containerd trust:** workers via `/etc/k0s/containerd/certs.d/10.20.20.201:5000/hosts.toml` + `ca.crt` (updated 2026-08-06)
+- **Container run:** `--restart=always -p 5000:5000`, env `REGISTRY_HTTP_TLS_CERTIFICATE/KEY=/certs/registry.crt|.key`, `REGISTRY_PROXY_REMOTEURL=https://ghcr.io`; data volume `0311d171…` → `/var/lib/registry`
+- **ghcr.io mirror:** `/etc/k0s/containerd/certs.d/ghcr.io/hosts.toml` on both workers → `server = "https://10.20.20.201:5000"` (2026-08-06). Verified: worker-1 pulled `ghcr.io/merpatidove/qti-api-gateway:e40ba85` through the mirror (33 MB, 4.5 s).
+- **Push is DISABLED in proxy mode** — registry:2 proxy ignores push (405). If you need a cluster push target, use `hite-prod` (`10.20.20.202:32000`), not this registry.
 
-**Currently stored images:**
+**Currently stored images** (legacy, from before proxy mode):
 
-| Image | Tag |
-|---|---|
-| `grafana/loki` | `2.9.3` |
-| `grafana/promtail` | `3.5.1` |
-| `busybox` | `1.36` |
+| Image |
+|---|
+| `busybox` |
+| `curlimages/curl` |
+| `grafana/loki` |
+| `grafana/promtail` |
+| `jaegertracing/jaeger` |
+| `prometheus/alertmanager` |
 
-**Pushing new images:**
-```bash
-docker tag <image> 10.20.20.201:5000/<image>:<tag>
-docker push 10.20.20.201:5000/<image>:<tag>
-```
-
-**Note:** Worker nodes have DNS UDP (port 53) blocked — they cannot resolve external registries (Docker Hub, etc.). All images must come from the local registry or be pre-loaded.
+**Note:** Worker nodes have DNS UDP (port 53) blocked — they cannot resolve external registries (Docker Hub, etc.). Non-ghcr images must come from the local registry/mirror or be pre-loaded (e.g. `docker save`/`load` for qdrant, §0 item 21).
 
 ##### 3.3.6 Ingress-NGINX (Deployed 2026-07-16)
 
@@ -829,13 +839,13 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
 ##### 3.4.1 For the Dev Teams (Unblocks Real Functionality)
 
 - [x] **api-gateway skeleton** — `/v1/health`, `/v1/query`, `/metrics` endpoints implemented. Query returned placeholder initially; **returns real retrieved SOP text since 2026-07-31** (commit `10898a1`, deployed `a0b4bec`; current deployed tag `485024c`).
-- [x] **rag-service scaffold** — `POST /api/v1/ticket` accepts JSON, returns dummy response. No Qdrant/Mistral integration.
+- [x] **rag-service scaffold** — `POST /api/v1/ticket` accepts JSON, returns dummy response. No Qdrant/Mistral integration. ***(Deleted from repo — superseded by the retrieval-only gateway, §1.3.5 / §3.1.3.)***
 - [x] **Write actual Rust source code** — *(per Data Engineering §2.3.5 above)*: `models.rs`, `routes/query.rs`, `clients/qdrant.rs` are **written, wired, and deployed** (2026-07-31). Only `clients/inference.rs` remains, and may be unnecessary — see §2.3.6.
   - `routes/query.rs` — POST /v1/query handler, Qdrant query, inference forward
   - `clients/qdrant.rs` — Qdrant HTTP client
   - `clients/inference.rs` — Mac Mini inference client
   - `models.rs` — matching `api_contract.md`
-- [x] **Create `qti_knowledge_base` collection** in Qdrant — **done** (size 384, Cosine; now holds **110 points** after 2026-08-05 ingestion of RAG Manual v1.1's 24 SOPs). The curl below is historical (note the size is already corrected to 384):
+- [x] **Create `qti_knowledge_base` collection** in Qdrant — **done** (size 384, Cosine). **Point count 2026-08-06: 0** — the v1.1 auto-reset deleted the collection at ~10:56 (110 points gone, not recoverable, §0 item 21); re-ingestion of the RAG_Manual v1.1 set is pending. The curl below is historical (note the size is already corrected to 384):
   ```bash
   kubectl port-forward -n qdrant svc/qdrant 6333:6333
   curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
@@ -843,15 +853,12 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
     -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
   ```
 - [x] **Set up the Mac Mini inference server** — Ollama live via WireGuard tunnel (§3.2.2). The gateway is retrieval-only (§2.3.6) so it does not consume `INFERENCE_URL`; the Python agent calls Ollama directly.
-- [ ] **Add secrets** — `QDRANT_URL` and any API keys should be Kubernetes Secrets, not hardcoded. (`INFERENCE_URL` dropped 2026-08-02 — retrieval-only decision §1.3.5; the env is dead and should be removed, not secretized.)
-- [ ] **Add `.gitignore`** — *(done — see Data Engineering §2.3.5)* `rag-service/target/` build artifacts are committed to the repo. Need to exclude `target/`, `*.pdb`, etc.
+- [x] **Add secrets** — **done 2026-08-05 (§0 item 17).** `api-gateway-secrets` Secret (ns `qti`) is now the single source of truth via `envFrom: secretRef`; hardcoded `QDRANT_URL` removed from `deployment.yaml`. (`INFERENCE_URL` dropped 2026-08-02 — retrieval-only decision §1.3.5.)
+- [x] **Add `.gitignore`** — **done (2026-08-02, §0 item 10).** `target/`/`__pycache__`/`venv/` excluded; `rag-service/` was deleted entirely (§3.1.3), so the original `rag-service/target/` concern is moot.
 
 ##### 3.4.2 Infrastructure Improvements (CI/CD & Argo CD ownership)
 
-- [ ] **Smoke test scope** — currently only checks `/v1/health` after build. Once Qdrant/inference code lands, add:
-  - Query endpoint returns valid JSON matching the API contract
-  - Qdrant connectivity responds
-  - Response time under X seconds
+- [x] **Smoke test scope** — **done (2026-07-31).** CI now checks `/v1/health` must return 200 **and** `POST /v1/query` must return a `remediation_payload`. *(Qdrant-connectivity + response-time assertions remain a possible future extension.)*
 - [x] **Change Argo CD admin password** — changed from default. Initial admin secret deleted.
 - [x] **TLS for Argo CD** — done. Self-signed CA + server cert for `argocd.hite.local`. TLS terminates at nginx-ingress, HTTPS backend to Argo CD. See §3.3.6.
 - [x] **Ingress** — nginx-ingress deployed, Ingress resources for Grafana, Prometheus, AlertManager on `.hite.local` hosts. See §3.3.6.
@@ -864,7 +871,7 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
 - [ ] **Multi-environment** — replicate for production (separate namespace or cluster, Git branch, ApplicationSet).
 - [ ] **Qdrant backup strategy** — NFS snapshots or Qdrant's built-in snapshot API.
 - [ ] **Network policies** — restrict pod-to-pod traffic (only api-gateway → Qdrant, api-gateway → inference).
-- [ ] **data-pipeline CI/CD** — *(the pipeline is Rust, not Python — see Data Engineering §2.3.5)* the scraping pipeline needs its own Dockerfile, workflow, and deployment manifests (CronJob maybe).
+- [x] **data-pipeline CI/CD** — **CI done 2026-08-06 (§0 item 22):** `data-pipeline/Dockerfile` + `.github/workflows/data-pipeline.yml` (push to `data-pipeline/**` → `cargo check` → build+push `ghcr.io/merpatidove/qti-data-pipeline:<sha>`). *(The pipeline is Rust, not Python — §2.3.5.)* Still open: **in-cluster deployment** — a CronJob/Job that mounts `RAG_Manual.md` and runs ingestion against an in-cluster-reachable `QDRANT_URL` (currently hardcoded `localhost:6333`, so it still runs from a dev laptop, §2.3.10).
 - [ ] **GPU node for inference** — if the Mac Mini becomes a bottleneck, consider adding a GPU worker node to the cluster.
 
 #### 3.5 Quick Reference (CI/CD)
@@ -881,8 +888,9 @@ kubectl -n argocd patch application qti-api-gateway \
   -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' \
   --type=merge
 
-# Test api-gateway
-kubectl -n qti run test --rm -i --restart=Never --image=curlimages/curl \
+# Test api-gateway — use the LOCAL registry copy of curl (Docker Hub is blocked
+# on workers; `--image=curlimages/curl` would ImagePullBackOff — 2026-08-06 gotcha)
+kubectl -n qti run test --rm -i --restart=Never --image=10.20.20.201:5000/curlimages/curl \
   -- curl -s http://api-gateway.qti.svc:8080/v1/health
 
 # Qdrant health
@@ -893,9 +901,11 @@ curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
   -H 'Content-Type: application/json' \
   -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
 
-# Push image to local registry
-docker tag <image>:<tag> 10.20.20.201:5000/<image>:<tag>
-docker push 10.20.20.201:5000/<image>:<tag>
+# Push image to local registry — NOTE: DISABLED since 2026-08-06 (proxy mode ignores push, §3.3.5).
+# Use the hite-prod registry (10.20.20.202:32000) as the cluster push target instead:
+docker tag <image>:<tag> 10.20.20.201:5000/<image>:<tag>   # do NOT docker push here
+docker tag <image>:<tag> 10.20.20.202:32000/<image>:<tag>
+docker push 10.20.20.202:32000/<image>:<tag>
 
 # Ingress — list all
 kubectl get ingress --all-namespaces
