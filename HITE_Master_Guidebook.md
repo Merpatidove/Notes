@@ -95,6 +95,12 @@ Nothing from the original five source files was deleted. Every table, checklist,
       - Additional Scrape Configs Live: Secret `prometheus-additional-configs` berhasil dibuat dan ditautkan ke Custom Resource Prometheus (`additionalScrapeConfigs`). Target `mac-mini-   external` (100.79.30.90:9100) dan `qti-agent-johan` (100.126.65.74:8000) aktif ter-scrape. Ingest metrik `qti_llm_tokens_total` (prompt: 34k, completion: 14k) terverifikasi real-time di Grafana Explore.
       - PrometheusRule `qti-business-alerts` Deployed: Aturan alert bisnis AI pipeline (`QTI_OllamaTimeoutSpike` & `QTI_AgentParseErrorHigh`) berhasil dibuat dan di-label dengan `release: prometheus`. Rule berhasil direconcile oleh Prometheus Operator dan berstatus Normal (Hijau) di Grafana Alerting UI.
       - Git Repository Synchronized: File `k8s/prometheus/prometheus-additional.yaml` dan `k8s/prometheus/qti-business-alerts.yaml` telah di-commit dan di-push ke repositori `Merpatidove/QTI-MAGANG` branch `main`.
+17. **2026-08-05 — Data Engineering sprint fully closed; `data-pipeline` upgraded to v1.1; Stage 2 KB expanded to 110 points.** Farrel completed all remaining closeout tasks, resolved critical network routing bugs, and executed the Stage 2 SOP expansion:
+    - **`api-gateway` configuration finalized:** Hardcoded `QDRANT_URL` removed from `deployment.yaml`; the mounted `api-gateway-secrets` Secret is now the single source of truth. Dead `http_requests_total` counter wired via an Axum `count_requests` middleware in `main.rs`.
+    - **`api_contract.md` updated to v2.0:** Explicitly documents the retrieval-only contract. `cognitive_triage`, `grounding_citations`, and `routing_decision` removed from the gateway schema and delegated to the DS agent.
+    - **`data-pipeline` upgraded for RAG Manual v1.1:** Replaced the fragile parser with a robust line-by-line state machine. Now extracts explicit `SOP_ID`, `Category`, `Confidence_Tier`, and `Tags` (stored as arrays for Qdrant filtering). Added auto-reset logic (deletes/recreates collection to prevent duplicates) and batched upserts (batch size 32) to prevent SSH tunnel drops.
+    - **Stage 2 KB Expansion:** Ingested 24 SOPs (including `SOP-INF-003..008`). `qti_knowledge_base` now holds exactly **110 points**.
+    - **Network routing workaround documented:** Discovered a `kube-router` ClusterIP routing bug on the controller. Implemented a definitive 3-terminal workaround (`kubectl port-forward` -> SSH tunnel -> local `cargo run`).
 
 ---
 
@@ -314,7 +320,8 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 | Component / File | Status | Access / Details |
 |---|---|---|
 | `api-gateway` Deployment (ns `qti`) | 1/1 Running, Healthy | NodePort **30082**. Image rebuilt 2026-08-03 (adds `qti_*` metrics; SHA per Actions tab). `envFrom: secretRef: api-gateway-secrets` mounted; dead `INFERENCE_URL` env removed. |
-| `api-gateway/src/main.rs` | Working, deployed | Orchestrator only (no business logic). Declares `mod models/routes/clients`, wires the router, exposes `/metrics`, binds `0.0.0.0:8080`. |
+| `api-gateway/src/main.rs` | Working, deployed | Orchestrator; wires router; exposes `/metrics`; binds `0.0.0.0:8080`. **`http_requests_total` wired via a `count_requests` middleware (2026-08-05)**. |
+| `api_contract.md` | **v2.0 (2026-08-05)** | Retrieval-only contract. Gateway returns `{ticket_metadata, remediation_payload}` only. |
 | `api-gateway/src/models.rs` | Working, deployed | `QueryRequest`, `QueryResponse`, `TicketMetadata`, `RemediationPayload` (serde; matches `api_contract.md`). |
 | `api-gateway/src/routes/mod.rs` | Working, deployed | Module table of contents: `pub mod health; pub mod query;` |
 | `api-gateway/src/routes/health.rs` | Working, deployed | `GET /v1/health` → `{"status":"ok","version":"0.1.0"}`; counter `health_checks_total`. K8s liveness/readiness target. |
@@ -324,15 +331,15 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 | `api-gateway/src/clients/inference.rs` | **NOT written** | Mac Mini inference client — possibly obsolete (see §2.3.6 / §2.4). |
 | `api-gateway/Cargo.toml` | Working | axum 0.8, tokio `[full]`, serde `[derive]`, serde_json, reqwest 0.12 `[rustls-tls, json]`, tracing, tracing-subscriber `[env-filter]`, prometheus 0.13 `[process]`, lazy_static 1.4, anyhow 1.0, **fastembed 4**. |
 | `api-gateway/Dockerfile` | Working | Multi-stage `rust:1-bookworm` → `debian:bookworm-slim`; was ~32 MB before `--download-only` baked the embedding model in (image `a0b4bec` is larger). |
-| `api-gateway/k8s/deployment.yaml` | Working | Liveness/readiness on `/v1/health`; `EMBED_CACHE_DIR=/opt/fastembed`; **`envFrom: secretRef: api-gateway-secrets` added, `INFERENCE_URL` removed (2026-08-03)**. `QDRANT_URL` still in `env:` as a safety net (shadows the Secret). |
+| `api-gateway/k8s/deployment.yaml` | Working | Liveness/readiness on `/v1/health`; `EMBED_CACHE_DIR=/opt/fastembed`; `envFrom: secretRef: api-gateway-secrets` mounted; `INFERENCE_URL` and hardcoded `QDRANT_URL` removed (2026-08-05) — Secret is the single source of truth. |
 | `api-gateway/k8s/service.yaml` | Working | NodePort 30082 (was ClusterIP on 8080; changed 2026-07-31). |
 | `api-gateway/k8s/kustomization.yaml` | Working | `newTag: <sha>` managed by CI commit-back. |
 | `api-gateway/k8s/servicemonitor.yaml` | Working | Prometheus scrapes `/metrics` every 15s. |
-| `data-pipeline/src/main.rs` | Working (**parser only**), **NOT deployed** | Reads `RAG_Manual.md`, splits on `"\n# SOP-"`, prints all 18 SOPs (id + title). Chunk → embed → upsert **not written in this crate** — the collection was nonetheless populated to 83 points on 2026-07-31 (ingestion path per §2.4); parser crate remains local-only. |
+| `data-pipeline/src/main.rs` | Working (**v1.1 schema parser**) | Reads `RAG_Manual.md` via robust line-by-line parser. Extracts explicit `SOP_ID`, `Category`, `Confidence_Tier`, and `Tags` from metadata blocks. Auto-resets collection and upserts in batches of 32. |
 | `data-pipeline/Cargo.toml` | Working | Parser uses std only; staged for next step: `fastembed`, `qdrant-client`, `uuid`, `serde`, `serde_json`, `anyhow`, `tokio`. |
 | `data-pipeline/RAG_Manual.md` | Present (data) | 18 structured SOPs — the ingestion source. |
 | `data-pipeline/golden_datasets.json` | Present (data) | Sample tickets — DS evaluation harness; **not** consumed by the Rust code yet. |
-| Collection `qti_knowledge_base` | Created, **green, 83 points** | **384-dim / Cosine** (NOT 1024 — see §2.3.1). 18 SOPs ingested + chunked on 2026-07-31 (commit `10898a1`). |
+| Collection `qti_knowledge_base` | Created, **green, 110 points** | **384-dim / Cosine**. 24 SOPs ingested + chunked on 2026-08-05 (RAG Manual v1.1). Payload includes `tags` array for filtering. |
 | Gateway → Qdrant | Reachable (in-cluster) | REST `http://qdrant.qdrant.svc.cluster.local:6333`. |
 | Pipeline → Qdrant | **Reachable (via SSH port-forward / tunnel)** | Ingestion ran over the tunnel path on 2026-07-31; Qdrant stays internal by design (no permanent NodePort exposure). |
 | `.gitignore` (repo root) | Added | `target/`, `*.pdb`, `*.exe`. |
@@ -421,6 +428,17 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 
 **2026-08-03:** **removed** — `INFERENCE_URL` no longer exists in `k8s/deployment.yaml` (§0 item 11).
 
+##### 2.3.13 The `kube-router` ClusterIP Bug & 3-Terminal Ingestion Workaround
+
+As of 2026-08-05, the controller VM (`DEBIAN13`) suffers from a `kube-router` networking bug where SSH tunnels targeting Qdrant's ClusterIP (`10.108.156.131`) or DNS (`qdrant.qdrant.svc.cluster.local`) time out or fail to resolve. Standard `ssh -L` commands will fail with `Connection timed out` or `Name or service not known`.
+
+To ingest data locally, you must bypass the broken cluster network using a 3-terminal workaround:
+1. **Terminal 1 (Controller Port-Forward):** Bypasses the network by talking directly to the K8s API.
+   `ssh ferdi@100.94.99.125` then `kubectl port-forward -n qdrant svc/qdrant 6333:6333`
+2. **Terminal 2 (SSH Tunnel to Laptop):** Maps local port to controller's localhost.
+   `ssh -L 6333:127.0.0.1:6333 ferdi@100.94.99.125`
+3. **Terminal 3 (Local Ingestion):** `cd data-pipeline && cargo run`
+
 #### 2.4 What Needs to Be Done (TODOs)
 
 **My lane — shipped**
@@ -436,10 +454,17 @@ Rust does not auto-scan folders. Every new file needs a `mod` declaration in `ma
 - [x] Mount `api-gateway-secrets` via `envFrom: secretRef` (§3.4.1 / §2.3.9).
 - [x] Instrument gateway-side business metrics: `qti_qdrant_match_total`, `qti_request_duration_seconds`, `qti_ticket_classification_total` — verified live on `/metrics`.
 
-**Minor / optional cleanups**
-- [ ] `http_requests_total` is registered but never incremented (§0 item 9) — wire it or drop it.
-- [ ] Optional: fully migrate `QDRANT_URL` into the Secret (remove the hardcoded `env:` line that currently shadows it).
-- [ ] Optional: update `api_contract.md` wording to match retrieval-only (§1.3.5).
+**My lane — done 2026-08-04 / 2026-08-05**
+- [x] Remove hardcoded `QDRANT_URL` from `deployment.yaml` (Secret is source of truth).
+- [x] Wire `http_requests_total` via Axum middleware (resolves §0 item 9).
+- [x] Update `api_contract.md` to v2.0 (retrieval-only).
+- [x] Upgrade `data-pipeline` to full v1.1 ingestion tool (robust parser, auto-reset, batched upserts, explicit metadata/tags extraction).
+- [x] **Stage 2 KB Expansion:** Ingested 24 SOPs (RAG Manual v1.1). `qti_knowledge_base` = **110 points**.
+
+**Minor / optional cleanups (all complete 2026-08-05)**
+- [x] `http_requests_total` is registered but never incremented (§0 item 9) — wired via the `count_requests` middleware.
+- [x] Optional: fully migrate `QDRANT_URL` into the Secret — done; hardcoded `env:` line removed, Secret is the single source of truth.
+- [x] Optional: update `api_contract.md` wording to match retrieval-only (§1.3.5) — done (v2.0).
 
 **Long-term (explicitly not this sprint)**
 - [ ] `data-pipeline` CI/CD — Dockerfile + workflow + CronJob (§3.4.3).
@@ -1256,7 +1281,8 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Blocked | Blocked on | Because | Status (2026-07-31) |
 |---|---|---|---|
 | Data Science E2E testing (§1.4) | Platform Engineering (Hilmi) | Rust API (port 8080) and Qdrant (port 6333) need a K0s network route (NodePort/LoadBalancer/kubeconfig RBAC) — see §1.3.1. | ✅ **Resolved** — api-gateway on NodePort 30082 (`http://100.106.122.68:30082`). Qdrant kept internal; DS E2E runs against the gateway. |
-| Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved** — ingestion ran via SSH port-forward tunnel; `qti_knowledge_base` = **83 points**. |
+| Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved (2026-08-05)** — ingestion via the 3-terminal workaround (§2.3.13, bypasses the `kube-router` ClusterIP bug); `qti_knowledge_base` = **110 points** (24 SOPs). |
+| DS Stage 2 Real-Data Eval (§1.4 / §8) | Data Engineering (Farrel) | Real tickets grounded in wrong SOPs due to coverage gaps; required new `SOP-INF-*` entries and v1.1 metadata parsing. | ✅ **Resolved 2026-08-05** — 24 SOPs ingested with explicit Categories, Tiers, and Tags. `qti_knowledge_base` = **110 points**. DS fully unblocked for Stage 2 re-eval. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
 | DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) & Johan (metrics) | "Blocked total" per §4.4, Phase 8. | ✅ **Resolved** — Infra blocker bypassed via Tailscale binding. Johan delivered agent metrics (`qti_*`) on `100.126.65.74:8000/metrics`. |
 | DevOps business-metric dashboards (Phase 6/7) | Farrel (gateway metrics) + Johan (agent metrics & Tier spec) | Gateway-side `qti_*` metrics and agent-side Tier specs needed instrumentation. | ✅ **Resolved** — Farrel delivered gateway metrics. Johan delivered agent hooks (`qti_*`) and official Tier A/B/C specs. Jep is fully unblocked to build dashboards. |
