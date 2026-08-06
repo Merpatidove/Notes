@@ -128,6 +128,13 @@ Nothing from the original five source files was deleted. Every table, checklist,
    - **data-pipeline CI added.** New `.github/workflows/data-pipeline.yml` (trigger: push to `data-pipeline/**` + `workflow_dispatch`): `cargo check` → build+push `ghcr.io/merpatidove/qti-data-pipeline:<sha>` (GitHub Actions only; no cluster deploy). New `data-pipeline/Dockerfile` (multi-stage, bakes all-MiniLM-L6-v2 via `--download-only`, mirrors api-gateway pattern). To support that, `data-pipeline/src/main.rs` gained a `--download-only` guard + `EMBED_CACHE_DIR` support (identical to api-gateway's pattern). Ingest still runs manually (`cd data-pipeline && cargo run`, §2.3.10 workaround); a cluster CronJob is a documented follow-up.
    - **§3 refreshed** to match: local-registry row corrected, pipeline flow documents the mirror step, §3.4.1/§3.4.2 checkboxes closed (secrets, `.gitignore`, smoke-test scope), rag-service rows struck, §3.4.3 `data-pipeline CI/CD` closed, quick-ref gotcha added (`curlimages/curl` test pods fail on air-gapped workers — use images from the local registry/mirror).
    - **Still open:** `curlimages/curl`-style `kubectl run` tests need a pre-loaded/mirrored image (documented in §3.5); legacy images on the proxy registry should eventually be re-pushed to `hite-prod` `32000`.
+23. **2026-08-06 — KB re-ingestion complete (103 points); `data-pipeline` parser finalized; Qdrant Raft/NFS write-latency flagged to DevOps.** Following the §0 item 21 outage, Farrel completed the re-ingestion and finalized the v1.1 parser:
+    - **Fence-tracking parser fix:** the interim "terminate-on-H1" parser wrongly truncated each SOP at the first `# ` comment line *inside* its fenced ` ```bash ` Remediation block (built only 72 truncated points). The final parser tracks markdown code fences so `# ` comments inside bash/python blocks are never mistaken for headers, and terminates SOPs on the `---` horizontal rule (also cleanly excluding the Python Appendix). Result: full Remediation text in every chunk.
+    - **Smart-reset logic:** the auto-reset (delete+create) hit Qdrant's Raft consensus timeout (`Waiting for consensus operation commit failed. Timeout set at: 10 seconds`) on the NFS-backed PVC. The pipeline now checks `points_count` first and only resets when the collection has data; when empty it upserts directly, bypassing the heavy delete+create op (§2.3.14).
+    - **Final state:** `qti_knowledge_base` = **103 points** (24 SOPs, 384-dim/Cosine), every payload carrying `sop_id`, `category`, `tier`, and a `tags` array. Verified live 2026-08-06. **Supersedes the "110 points" (2026-08-05) and the item-21 "72-point set" figures — 103 is the correct post-fix count** (tighter chunking, no Appendix bleed).
+    - **Empty-KB root cause (for the record):** the v1.1 auto-reset's delete+recreate *succeeded* (fresh empty collection at ~10:56), but the refill upsert failed at that exact moment (pod rescheduled to worker-2, stuck in `ImagePullBackOff` / Raft timing out) — so the collection sat at 0 points. Not a data-model problem; bad infra timing.
+    - **Infra follow-up (handed to Ferdi):** Qdrant Raft consensus remains slow on heavy writes post-restart (likely NFS WAL fsync latency on the `10.20.20.201` share). DE workaround in place (smart reset); DevOps to check `kubectl logs qdrant-0 -n qdrant` for Raft warnings / NFS latency and consider local (non-NFS) WAL storage or a tuned consensus timeout.
+    - **DS unblocked:** Tyo notified the KB is ready for the REAL-003 probe + 8-ticket Stage 2 re-eval (§8.4 post-ingest re-eval pending).
 
 ---
 
@@ -162,7 +169,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 | `evaluation_results.json` | Generated (real) | Latest committed run (`edb7dff`, HEAD `0cde7e2`): 55/55 valid, 55/55 schema, **52/55 grounded (94.5%)**. Treatment band across runs: 52–53/55 (94.5–96.4%); archived `3a03a55` sample = 53/55. (2026-08-02 baseline: 43.6%.) |
 | evaluation_results_{control2,treatment1_isnotnone,treatment2_errorgate}_0803.json | Archived | Experiment samples (2026-08-03): control band (24–28/55) + falsified `is not None` hypothesis + winning Error-gate treatment. |
 | Rust API ( /v1/query ) | Deployed, live / retrieval-only | NodePort 30082. Returns retrieved SOP text in `remediation_payload.proposed_fix` (no 5W1H). Reached directly over Tailscale for the retrieval diagnostic; reached by the agent's `search_sop` for RAG context. |
-| Qdrant DB ( qti_knowledge_base ) | Deployed, **110 points** | 384-dim / Cosine, **24 SOPs chunked (2026-08-05)**. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
+| Qdrant DB ( qti_knowledge_base ) | Deployed, **103 points** | 384-dim / Cosine, **24 SOPs chunked (re-ingested 2026-08-06)**. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
 | llm-inference/collected_error_logs.json | **New** | Staging record of 14 raw error logs (real debugging) — the provenance for the real tickets |
 | data-pipeline/real_tickets.json | **New** | Stage 2 real-ticket eval set (REAL-001/002/003); flat array, same schema as golden |
 | llm-inference/evaluation_results_real_0804.json | **Archived** | Stage 2 real-ticket run (3/3 grounded, but 2 in wrong SOP) |
@@ -205,7 +212,7 @@ The `grade_result.py` script enforces a hard, exact-match key check for the 5W1H
 
 ##### 1.3.3 Qdrant Database State
 
-The `qti_knowledge_base` collection is initialized with a 384-dim Cosine configuration and its status is Green. **As of 2026-08-05 it holds 110 points** (24 SOPs, chunked) — the Data Engineer has run the document ingestion pipeline, so `clients::qdrant::search_sop` now returns actionable vectors. *(First written when the collection was empty at 0 points; interim state 83 points / 18 SOPs as of 2026-07-31.)*
+The `qti_knowledge_base` collection is initialized with a 384-dim Cosine configuration and its status is Green. **As of 2026-08-06 it holds 103 points** (24 SOPs, chunked by the fence-tracking parser) — re-ingested after the 2026-08-06 outage (§0 items 21/23). *(First written when empty; interim 83 points / 18 SOPs on 2026-07-31 and 110 points on 2026-08-05.)*
 
 ##### 1.3.4 Version Control Artifacts
 
@@ -255,7 +262,7 @@ With tool-selection and retrieval healthy (all `search_sop`, 0 empty), the remai
 - [x] Open K0s network route to expose Qdrant (port 6333) to allow Data Engineering SOP ingestion. *(done — ingestion ran via SSH port-forward tunnel; Qdrant intentionally not exposed permanently, see §3.2.3)*
 
 **Data Engineering Unblocks**
-- [x] Ingest the 18 SOPs from the RAG manual, generate embeddings, and populate the empty Qdrant vector database. *(done 2026-07-31 — `qti_knowledge_base` = 83 points, 384-dim/Cosine; expanded to **110 points / 24 SOPs** by 2026-08-05, §1.1)*
+- [x] Ingest the 18 SOPs from the RAG manual, generate embeddings, and populate the empty Qdrant vector database. *(done 2026-07-31 — `qti_knowledge_base` = 83 points, 384-dim/Cosine; expanded to **110 points / 24 SOPs** by 2026-08-05, §1.1) (re-ingested at 103 points 2026-08-06, §0 item 23)*
 - [x] Wire the Rust backend (`/v1/query`) to actively call `clients::qdrant::search_sop` instead of returning the placeholder payload. *(done 2026-07-31 — commit `10898a1`, deployed as `a0b4bec`)*
 - [x] Confirm `clients/inference.rs` is needed — confirmed NOT needed (joint DS+DE decision 2026-08-02); gateway is retrieval-only (§1.3.5 / §2.3.6), file not built.
 
@@ -362,11 +369,11 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 | `api-gateway/k8s/service.yaml` | Working | NodePort 30082 (was ClusterIP on 8080; changed 2026-07-31). |
 | `api-gateway/k8s/kustomization.yaml` | Working | `newTag: <sha>` managed by CI commit-back. |
 | `api-gateway/k8s/servicemonitor.yaml` | Working | Prometheus scrapes `/metrics` every 15s. |
-| `data-pipeline/src/main.rs` | Working (**v1.1 schema parser**) | Reads `RAG_Manual.md` via robust line-by-line parser. Extracts explicit `SOP_ID`, `Category`, `Confidence_Tier`, and `Tags` from metadata blocks. Auto-resets collection and upserts in batches of 32. |
+| `data-pipeline/src/main.rs` | Working (**v1.1 fence-tracking parser + smart reset**) | Reads `RAG_Manual.md` via a line-by-line state machine that tracks code fences (so `# ` bash comments never truncate Remediation blocks) and terminates SOPs on `---`. Extracts explicit `SOP_ID`, `Category`, `Confidence_Tier`, `Tags` (array). Smart reset (resets only when `points_count` > 0, §2.3.14) + batched upserts of 32. |
 | `data-pipeline/Cargo.toml` | Working | Parser uses std only; staged for next step: `fastembed`, `qdrant-client`, `uuid`, `serde`, `serde_json`, `anyhow`, `tokio`. |
 | `data-pipeline/RAG_Manual.md` | Present (data) | 18 structured SOPs — the ingestion source. |
 | `data-pipeline/golden_datasets.json` | Present (data) | Sample tickets — DS evaluation harness; **not** consumed by the Rust code yet. |
-| Collection `qti_knowledge_base` | Created, **green, 110 points** | **384-dim / Cosine**. 24 SOPs ingested + chunked on 2026-08-05 (RAG Manual v1.1). Payload includes `tags` array for filtering. |
+| Collection `qti_knowledge_base` | Created, **green, 103 points** | **384-dim / Cosine**. 24 SOPs re-ingested 2026-08-06 (RAG Manual v1.1, fence-tracking parser; supersedes the 110-point 2026-08-05 run). Payload includes `tags` array for filtering. |
 | Gateway → Qdrant | Reachable (in-cluster) | REST `http://qdrant.qdrant.svc.cluster.local:6333`. |
 | Pipeline → Qdrant | **Reachable (via SSH port-forward / tunnel)** | Ingestion ran over the tunnel path on 2026-07-31; Qdrant stays internal by design (no permanent NodePort exposure). |
 | `.gitignore` (repo root) | Added | `target/`, `*.pdb`, `*.exe`. |
@@ -466,6 +473,10 @@ To ingest data locally, you must bypass the broken cluster network using a 3-ter
    `ssh -L 6333:127.0.0.1:6333 ferdi@100.94.99.125`
 3. **Terminal 3 (Local Ingestion):** `cd data-pipeline && cargo run`
 
+##### 2.3.14 Qdrant Raft consensus timeout on heavy writes (NFS WAL)
+
+After the 2026-08-06 pod restart, `data-pipeline`'s delete+recreate began failing with `Service internal error: Waiting for consensus operation commit failed. Timeout set at: 10 seconds`. A single-node Qdrant should commit instantly; the timeout points to slow WAL fsync on the NFS-backed PVC (`10.20.20.201` share) or degraded Raft state post-restart. **DE workaround (2026-08-06):** the pipeline checks `points_count` first and skips the delete+create when the collection is already empty (smart reset), upserting directly in batches of 32. **Infra follow-up (Ferdi):** check `kubectl logs qdrant-0 -n qdrant` for Raft warnings + NFS latency; consider local (non-NFS) storage for the Qdrant WAL or a tuned consensus timeout. Until then, avoid delete+recreate against a slow cluster; prefer upsert-to-empty.
+
 #### 2.4 What Needs to Be Done (TODOs)
 
 **My lane — shipped**
@@ -487,6 +498,7 @@ To ingest data locally, you must bypass the broken cluster network using a 3-ter
 - [x] Update `api_contract.md` to v2.0 (retrieval-only).
 - [x] Upgrade `data-pipeline` to full v1.1 ingestion tool (robust parser, auto-reset, batched upserts, explicit metadata/tags extraction).
 - [x] **Stage 2 KB Expansion:** Ingested 24 SOPs (RAG Manual v1.1). `qti_knowledge_base` = **110 points**.
+- [x] **Stage 2 KB re-ingestion (2026-08-06):** finalized fence-tracking parser + smart reset; `qti_knowledge_base` = **103 points** (supersedes the lost 110-point run, §0 items 21/23).
 
 **Minor / optional cleanups (all complete 2026-08-05)**
 - [x] `http_requests_total` is registered but never incremented (§0 item 9) — wired via the `count_requests` middleware.
@@ -845,7 +857,7 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
   - `clients/qdrant.rs` — Qdrant HTTP client
   - `clients/inference.rs` — Mac Mini inference client
   - `models.rs` — matching `api_contract.md`
-- [x] **Create `qti_knowledge_base` collection** in Qdrant — **done** (size 384, Cosine). **Point count 2026-08-06: 0** — the v1.1 auto-reset deleted the collection at ~10:56 (110 points gone, not recoverable, §0 item 21); re-ingestion of the RAG_Manual v1.1 set is pending. The curl below is historical (note the size is already corrected to 384):
+- [x] **Create `qti_knowledge_base` collection** in Qdrant — **done** (size 384, Cosine). **Point count 2026-08-06: 103** — after the §0 item 21 empty-KB finding, Farrel re-ingested the RAG_Manual v1.1 set with the finalized fence-tracking parser (§0 item 23). The curl below is historical (note the size is already corrected to 384):
   ```bash
   kubectl port-forward -n qdrant svc/qdrant 6333:6333
   curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
@@ -1370,8 +1382,8 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Blocked | Blocked on | Because | Status (2026-07-31) |
 |---|---|---|---|
 | Data Science E2E testing (§1.4) | Platform Engineering (Hilmi) | Rust API (port 8080) and Qdrant (port 6333) need a K0s network route (NodePort/LoadBalancer/kubeconfig RBAC) — see §1.3.1. | ✅ **Resolved** — api-gateway on NodePort 30082 (`http://100.106.122.68:30082`). Qdrant kept internal; DS E2E runs against the gateway. |
-| Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved (2026-08-05)** — ingestion via the 3-terminal workaround (§2.3.13, bypasses the `kube-router` ClusterIP bug); `qti_knowledge_base` = **110 points** (24 SOPs). |
-| DS Stage 2 Real-Data Eval (§1.4 / §8) | Data Engineering (Farrel) | Real tickets grounded in wrong SOPs due to coverage gaps; required new `SOP-INF-*` entries and v1.1 metadata parsing. | ✅ **Resolved 2026-08-05** — 24 SOPs ingested with explicit Categories, Tiers, and Tags. `qti_knowledge_base` = **110 points**. DS fully unblocked for Stage 2 re-eval. |
+| Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved (2026-08-05)** — ingestion via the 3-terminal workaround (§2.3.13, bypasses the `kube-router` ClusterIP bug); `qti_knowledge_base` = **103 points** (2026-08-06 re-ingest) (24 SOPs). |
+| DS Stage 2 Real-Data Eval (§1.4 / §8) | Data Engineering (Farrel) | Real tickets grounded in wrong SOPs due to coverage gaps; required new `SOP-INF-*` entries and v1.1 metadata parsing. | ✅ **Resolved 2026-08-05** — 24 SOPs ingested with explicit Categories, Tiers, and Tags. `qti_knowledge_base` = **103 points** (2026-08-06 re-ingest). DS fully unblocked for Stage 2 re-eval. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
 | DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) & Johan (metrics) | DONE / LIVE — Blocker jaringan teratasi via Tailscale/WireGuard. Metrik Mac Mini Node Exporter (100.79.30.90:9100) dan Agent Johan (100.126.65.74:8000/metrics) resmi unblocked dan aktif dipantau oleh Prometheus & Loki. | ✅ **Resolved** — Infra blocker bypassed via Tailscale binding. Johan delivered agent metrics (`qti_*`) on `100.126.65.74:8000/metrics`. |
 | DevOps business-metric dashboards (Phase 6/7) | Farrel (gateway metrics) + Johan (agent metrics & Tier spec) | DONE / LIVE — Instrumentasi metrik bisnis qti_* (gateway & agent, termasuk Tier-based Confidence) sudah tuntas 100%, divisualisasikan di Grafana Dashboard, serta terintegrasi ke Telegram Alerting (qti-business-alerts). | ✅ **Resolved** — Farrel delivered gateway metrics. Johan delivered agent hooks (`qti_*`) and official Tier A/B/C specs. Jep is fully unblocked to build dashboards. |
@@ -1421,7 +1433,7 @@ Curation rules: one ticket per root cause (dedupe repeats); info/benign noise �
 | REAL-007 | etcd request timeout (leader election) | SOP-INF-007 |
 | REAL-008 | Argo CD Redis unreachable | SOP-INF-008 |
 
-Coverage-gap finding: initial 3-ticket run = 1/3 correctly grounded, 2/3 grounded-in-wrong-SOP. Remediation = SOP expansion SOP-INF-003..008 → RAG_Manual v1.1 (24 SOPs) → Farrel ingest → 110 points (§2.4). Real-set grounding 6/8 (75%); post-ingest correct-SOP re-eval pending.
+Coverage-gap finding: initial 3-ticket run = 1/3 correctly grounded, 2/3 grounded-in-wrong-SOP. Remediation = SOP expansion SOP-INF-003..008 → RAG_Manual v1.1 (24 SOPs) → Farrel ingest → **103 points** (§2.4, re-ingested 2026-08-06). Real-set grounding 6/8 (75%); post-ingest correct-SOP re-eval pending.
 
 **8.5 Key methodological findings**
 
