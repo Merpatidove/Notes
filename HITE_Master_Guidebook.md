@@ -101,6 +101,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - **`data-pipeline` upgraded for RAG Manual v1.1:** Replaced the fragile parser with a robust line-by-line state machine. Now extracts explicit `SOP_ID`, `Category`, `Confidence_Tier`, and `Tags` (stored as arrays for Qdrant filtering). Added auto-reset logic (deletes/recreates collection to prevent duplicates) and batched upserts (batch size 32) to prevent SSH tunnel drops.
     - **Stage 2 KB Expansion:** Ingested 24 SOPs (including `SOP-INF-003..008`). `qti_knowledge_base` now holds exactly **110 points**.
     - **Network routing workaround documented:** Discovered a `kube-router` ClusterIP routing bug on the controller. Implemented a definitive 3-terminal workaround (`kubectl port-forward` -> SSH tunnel -> local `cargo run`).
+18. **2026-08-06 — Methodology finalized; §8 promoted from draft to final.** §8 now carries the full two-stage methodology (system under test, metrics, Stage 1 + Stage 2 results, findings, limitations). Stage 2 real set expanded to 8 tickets (REAL-001..008); SOP expansion SOP-INF-003..008 → RAG_Manual v1.1 (24 SOPs) ingested by Farrel → qti_knowledge_base = 110 points. Real-set grounding 6/8 (75%); post-ingest correct-SOP re-eval pending.
 
 ---
 
@@ -113,7 +114,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 - [§5 — Platform Engineering (Owner: Hilmi)](#5-platform-engineering-owner-hilmi)
 - [§6 — Mac Mini Full-Hosting: Consolidated View (NEW)](#6-mac-mini-full-hosting-consolidated-view-new)
 - [§7 — Cross-Role Dependency & Blocker Map (NEW)](#7-cross-role-dependency--blocker-map-new)
-- [§8 — Methodology Doc Draft (NEW)](#8-methodology-doc-draft-new)
+- [§8 — Data Science Methodology — 5W1H Triage Evaluation (FINAL)](#8-data-science-methodology--5w1h-triage-evaluation-final)
 
 ---
 
@@ -237,7 +238,7 @@ With tool-selection and retrieval healthy (all `search_sop`, 0 empty), the remai
 - [x] Raise grounding above the 43.6% baseline — **DONE 2026-08-03 (treatment band 94.5–96.4%, ≈95%)**. Real root cause was the "Error"-substring veto in the synthesis gate, not the falsy gate; the `is not None` hypothesis was falsified first.
 - [x] Spec the business metrics from data — Tier A/B/C, escape-hatch rate, confidence. *(Done 2026-08-03: Tier A = Complete + Grounded; Tier B = Complete + Ungrounded; Tier C = Incomplete/Escape. Handed off to Jep for dashboards).*
 - [x] Add agent-side observability hooks (JSON-decode failure, Ollama timeout, empty-retrieval counters). *(Done 2026-08-03: exposed 5 custom `qti_*` metrics on `/metrics`, §4.1.4).*
-- [ ] Finalize methodology documentation (drafted; two-stage maturity model).
+- [x] Finalize methodology documentation — done 2026-08-06 (METHODOLOGY.md committed; §8 final).
 - [ ] (IN PROGRESS) Stage 2 real-data validation: manual error→eval curation DONE (3 real tickets, coverage-gap found). Next: SOP knowledge-base expansion (author SOP-INF-003/004 → Farrel ingest → re-eval) + collect more real tickets. Automated Loki curator still pending Loki access.
 
 **DevOps (CI/CD & Prometheus)**
@@ -1336,23 +1337,52 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | **`qti-agent` Deployment** | Ferdi / DevOps | K8s Cluster (ns `qti`) | ✅ **Resolved** | Pod running 1/1, HTTP server listening on `:8080`. |
 ---
 
-## §8. Methodology Doc Draft (NEW)
+## §8. Data Science Methodology — 5W1H Triage Evaluation (FINAL)
 
-> Draft of the Data Science methodology document (referenced in §1.4: "Finalize methodology documentation (drafted; two-stage maturity model)"). Owned by Johan. Two-stage maturity model: Stage 1 = synthetic golden-set validation, Stage 2 = real-data validation.
+Owned by Johan. Finalized 2026-08-06 (replaces the draft). Two-stage maturity model: Stage 1 = synthetic golden-set validation (can the pipeline produce a complete, grounded 5W1H?); Stage 2 = real-data validation (does it ground in the RIGHT SOP on production-shaped errors?). Stage 1 is necessary but not sufficient: the synthetic set has a matching SOP for every ticket, so it can never exercise the wrong-SOP failure mode that Stage 2 exposes.
 
-### Stage 1 — Synthetic Baseline
+**8.1 System under test**
 
-55-ticket golden set (`golden_datasets.json`), graded on the two-metric grader (§1.3.6): schema completeness 55/55, grounded band 52–53/55 (94.5–96.4%, ≈95%). Stage 1 result is the committed HEAD `evaluation_results.json` (52/55) — the documented baseline (§1.6). Note: the synthetic set has a matching SOP for every ticket, so it never exercises the wrong-SOP-grounding failure mode found in Stage 2.
+ticket (raw_text + project_tags) → agent.py (FastAPI ReAct orchestrator, :8000 /process-ticket): analysis phase (Ollama Qwen2.5-Coder-7B Q4_K_M over the SSH tunnel → WireGuard, §1.3.7) produces a 5W1H + tool choice; if search_sop is chosen, tools.search_sop calls the gateway /v1/query (NodePort 30082) for RAG context; a synthesis call grounds why/how in the retrieved SOP. Output = flat 6-key 5W1H + confidence tier. The gateway is retrieval-only (§1.3.5); the 5W1H lives in the agent output, not the gateway response.
 
-### Stage 2 — Real-Data Validation
+**8.2 Metrics (two-metric grader + tier)**
 
-Manual curation complete (3 real tickets): 1/3 correctly grounded, 2/3 grounded-in-wrong-SOP (no Ollama/Loki SOPs exist). **Finding:** the naive grounding metric is blind to retrieval correctness — it counts wrong-SOP grounding as grounded. SOP expansion (SOP-INF-003/004) is the remediation; validate on fresh tickets afterward. Reproducibility note: synthetic band 52–54/55; temp 0.1 ablation = 45/55 (JSON degeneration); seed 42 @ temp 0.8 = 49→48 (Metal non-determinism) → report mean ± range / threshold, never a single point.
+Complete 5W1H Schema = all six keys (Who/What/When/Where/Why/How, case-insensitive) present and non-empty — measures shape. Grounded = how ≠ the "Pending SOP search" placeholder — measures whether the RAG half reached the answer (§1.3.6). Tier mapping: A = complete + grounded; B = complete but ungrounded; C = incomplete / escape-hatch. Caveat (§1.3.8): the naive grounding check is blind to retrieval correctness — a nearest-neighbor SOP always returns, so wrong-SOP grounding still counts as grounded; honest grounding needs human review or a retrieval-correctness signal.
 
-### Next / Pending
+**8.3 Stage 1 — Synthetic validation (55 tickets)**
 
-- Author `SOP-INF-003` (Ollama unreachable over WireGuard) + `SOP-INF-004` (Loki datasource unreachable) → append to `RAG_Manual.md` → Farrel re-ingests (384-dim) → re-eval on the REAL set (§1.4).
-- Collect fresh real tickets to re-test generalization once REAL-001/002 become "seen" by the expanded SOP KB.
-- Automated error→eval curator from Loki still pending Loki access (see §1.4 / §4.2).
+| Run | Schema | Grounded | Note |
+| --- | --- | --- | --- |
+| 2026-08-02 baseline | 55/55 | 24/55 (43.6%) | first real grounding measurement |
+| 2026-08-03 treatment (_is_err gate) | 55/55 | 52–53/55 (94.5–96.4%) | root cause was the "Error"-substring veto |
+| 2026-08-05 clean run | 55/55 | 48/55 | 7 synthesis JSON decode failures = last loss bucket (§1.3.10) |
+
+Reproducibility (§1.3.9): temp 0.1 → 45/55 (JSON degeneration); seed 42 @ temp 0.8 → 49→48 (Metal/llama.cpp not bit-deterministic). Report a band/threshold, never a single point.
+
+**8.4 Stage 2 — Real-data validation (8 tickets)**
+
+Curation rules: one ticket per root cause (dedupe repeats); info/benign noise ≠ incident; sources = Loki log mining + real debugging sessions.
+
+| Ticket | Root cause | Expected SOP |
+| --- | --- | --- |
+| REAL-001 | Ollama unreachable over WireGuard | SOP-INF-003 |
+| REAL-002 | Loki datasource unreachable | SOP-INF-004 |
+| REAL-003 | nginx bind() port in use | SOP-DOC-002 |
+| REAL-004 | VolumeSnapshot CRDs missing (csi-snapshotter) | SOP-INF-005 |
+| REAL-005 | Loki querier context-canceled bursts | SOP-INF-004 |
+| REAL-006 | worker lost route to control plane | SOP-INF-006 |
+| REAL-007 | etcd request timeout (leader election) | SOP-INF-007 |
+| REAL-008 | Argo CD Redis unreachable | SOP-INF-008 |
+
+Coverage-gap finding: initial 3-ticket run = 1/3 correctly grounded, 2/3 grounded-in-wrong-SOP. Remediation = SOP expansion SOP-INF-003..008 → RAG_Manual v1.1 (24 SOPs) → Farrel ingest → 110 points (§2.4). Real-set grounding 6/8 (75%); post-ingest correct-SOP re-eval pending.
+
+**8.5 Key methodological findings**
+
+(1) schema-complete ≠ RAG-grounded — conflating them hid the real state for weeks; (2) naive grounding is blind to retrieval correctness — nearest-neighbor always returns; (3) the last synthetic loss bucket is synthesis JSON decode failure, fixed by retry-on-parse-failure; (4) once real tickets are ingested they become "seen" — generalization needs fresh unseen tickets.
+
+**8.6 Limitations & future work**
+
+Automated error→eval curator from Loki (§4.2, PROPOSED, not built; raw errors must NOT auto-embed into Qdrant — human-gated SOP authoring only). Retrieval-correctness signal to automate honest grounding. grade_result.py into CI (threshold gate, e.g. grounded ≥ 45/55). Synthesis retry-on-parse-failure to close the last synthetic loss bucket.
 
 ---
 
