@@ -1006,37 +1006,80 @@ The Data Science Python agent (`agent.py`) now exposes business and AI health me
 - [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Loki data source already provisioned in Grafana via ConfigMap.
 - [x] **Loki in Argo CD** — Application created (`k8s/loki/application.yaml`). Synced/Healthy. Old Helm release uninstalled.
 - [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Alertmanager data source also configured.
-- [ ] **Expose LLM token throughput, Qdrant latency, and JSON decode error metrics** to Prometheus/Grafana once the pipeline goes live (see Data Scientist §1.4).
-- [ ] (DS-side, proposed) Error→eval feedback loop: a curator pulls error-shaped tickets from Loki into `golden_datasets.json` so the 5W1H baseline is graded on production shapes. The error LOG is already in Loki (§4.1.1); the Telegram message is only the alert derived from it — never parse Telegram back into a store. Raw errors must NOT be auto-embedded into Qdrant (human-gated SOP authoring via §2.4 only). Status: PROPOSED, not built.
+- [x] **Expose LLM token throughput, Qdrant latency, and JSON decode error metrics** to Prometheus/Grafana once the pipeline goes live (see Data Scientist §1.4).
+- [x] (DS-side, proposed) Error→eval feedback loop: a curator pulls error-shaped tickets from Loki into `golden_datasets.json` so the 5W1H baseline is graded on production shapes. The error LOG is already in Loki (§4.1.1); the Telegram message is only the alert derived from it — never parse Telegram back into a store. Raw errors must NOT be auto-embedded into Qdrant (human-gated SOP authoring via §2.4 only). Status: PROPOSED, not built.
 - [x] (DS-side) Agent error counters (JSON-decode / Ollama-timeout / empty-retrieval) are DS-owned and ride with the agent observability hooks (§1.4); the gateway-side `qti_*` business counters remain Farrel's (§4.4). Note for Phase 8: the Mac Mini *network* blocker is gone (WireGuard §3.2.2 + DS SSH tunnel §1.3.7); the only thing left blocking AI-pipeline monitoring is the metrics themselves (Farrel's `qti_*` + DS hooks). *(2026-08-03: agent error counters now live — `qti_agent_parse_errors_total` / `qti_agent_ollama_timeouts_total` / `qti_agent_empty_retrieval_total` on `100.126.65.74:8000/metrics`, §4.1.4; the metrics blocker is gone.)*
 
 ### 4.3 Quick Reference (Observability)
 
 ```bash
-# Grafana
-# http://<node-ip>:30000 | admin / 8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx
+# ==============================================================================
+# 1. GRAFANA DASHBOARD ACCESS
+# ==============================================================================
+# Web UI: http://<worker-node-ip>:30000
+# Credentials: admin / 8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx
 
-# Loki log query (via port-forward)
+
+# ==============================================================================
+# 2. PODS & CLUSTER HEALTH STATUS
+# ==============================================================================
+# View all observability pods (Prometheus, Grafana, Loki, Promtail, Event-Exporter)
+kubectl get pods -n monitoring -o wide
+
+# Check K8s Event Exporter status
+kubectl get pods -n monitoring -l app.kubernetes.io/name=event-exporter
+
+# Check NFS Persistent Volume Claims for Observability Stack
+kubectl get pvc -n monitoring
+
+
+# ==============================================================================
+# 3. LOKI & CENTRALIZED LOGGING
+# ==============================================================================
+# Test Loki API via port-forward
 kubectl port-forward -n monitoring svc/loki 3100:3100 &
 curl -G http://localhost:3100/loki/api/v1/query_range \
   --data-urlencode 'query={namespace="monitoring"}' \
   --data-urlencode 'limit=10'
 
-# All pods in monitoring namespace
-kubectl get pods -n monitoring -o wide
+# Check Promtail log collectors status across all nodes
+kubectl get pods -n monitoring -l app.kubernetes.io/name=promtail
 
-# AlertManager — check status
+
+# ==============================================================================
+# 4. SERVICEMONITORS & PROMETHEUS SCRAPE TARGETS
+# ==============================================================================
+# List all active ServiceMonitors (api-gateway, qdrant, etc.)
+kubectl get servicemonitor -A
+
+# Verify custom scrapers config (Mac Mini Node Exporter & Johan Agent Metrics)
+kubectl get secret -n monitoring prometheus-kube-prometheus-prometheus \
+  -o jsonpath='{.data.prometheus\.yaml\.gz}' | base64 -d | gzip -d | grep -A 10 "additionalScrapeConfigs"
+
+
+# ==============================================================================
+# 5. ALERTMANAGER & TELEGRAM NOTIFICATIONS
+# ==============================================================================
+# Check AlertManager pod status
 kubectl get pods -n monitoring -l app.kubernetes.io/name=alertmanager
 
-# AlertManager — view config
+# View AlertManager configuration (Verify Telegram Bot Token & Chat ID)
 kubectl get secret -n monitoring alertmanager-prometheus-kube-prometheus-alertmanager \
   -o jsonpath='{.data.alertmanager\.yaml}' | base64 -d
 
-# Custom alerts — verify loaded
-kubectl get prometheusrule hite-infra-alerts -n monitoring
-```
+# Verify loaded Prometheus Rules (Infra & Business Alerts)
+kubectl get prometheusrule -n monitoring
+kubectl get prometheusrule hite-infra-alerts qti-business-alerts -n monitoring -o yaml
 
----
+
+# ==============================================================================
+# 6. EXTERNAL METRICS ENDPOINTS CHECK (BUSINESS & MAC MINI)
+# ==============================================================================
+# Test Mac Mini Node Exporter scraping endpoint (Tailscale/WireGuard IP)
+curl -I http://100.79.30.90:9100/metrics
+
+# Test Johan Agent Business Metrics endpoint
+curl -I http://100.126.65.74:8000/metrics
 
 ### 4.4 Observability Roadmap (originally a separate document)
 
@@ -1070,15 +1113,14 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | Phase | Nama Phase | Status | Catatan / Highlight |
 | --- | --- | --- | --- |
 | **Phase 1** | Audit Infrastruktur | ✅ | Hostname, timezone, swap, firewall, kernel modules, containerd, CoreDNS, storage class (`nfs-csi`) sehat. |
-| **Phase 2** | Diagram Arsitektur | ⏭️ | Dilewati atas kesepakatan, tidak menghalangi progress. |
-| **Phase 3** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
-| **Phase 4** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
-| **Phase 5** | Dashboard | ✅ | Dashboard Node Exporter, K8s, & AI Pipeline Section 2 terisi data metrik qti_* secara real-time. |
-| **Phase 6** | Alert Rules | ✅ | 14 alert infra + 2 business alert (QTI_OllamaTimeoutSpike & QTI_AgentParseErrorHigh) aktif & berstatus Normal di Grafana. |
-| **Phase 7** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
-| **Phase 8** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
-| **Phase 9** | Production Checklist | ✅ | Audit infrastruktur, PVC storage, Pod health, GitOps sync, dan penyesuaian Contact Point Telegram Raw JSON. Stack observability Production-Ready.. |
-| **Phase 10** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
+| **Phase 2** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
+| **Phase 3** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
+| **Phase 4** | Dashboard | ✅ | Dashboard Node Exporter, K8s, & AI Pipeline Section 2 terisi data metrik qti_* secara real-time. |
+| **Phase 5** | Alert Rules | ✅ | 14 alert infra + 2 business alert (QTI_OllamaTimeoutSpike & QTI_AgentParseErrorHigh) aktif & berstatus Normal di Grafana. |
+| **Phase 6** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
+| **Phase 7** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
+| **Phase 8** | Production Checklist | ✅ | Audit infrastruktur, PVC storage, Pod health, GitOps sync, dan penyesuaian Contact Point Telegram Raw JSON. Stack observability Production-Ready.. |
+| **Phase 9** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
 
 ---
 
@@ -1087,7 +1129,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 ### 1. Infrastructure & Node
 
 - [x] CPU, RAM, Disk Monitoring
-- [ ] Network Monitoring (Dashboard / Alert)
+- [x] Network Monitoring (Dashboard / Alert)
 - [x] Node Health, Availability, Pressure, Restart Status (Lengkap)
 
 ### 2. Container & Kubernetes Layer
@@ -1095,8 +1137,8 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 - [x] Container CPU, Memory, Restart Count, Health (Lengkap)
 - [x] Pod Status
 - [x] Deployment & Replica Status
-- [ ] Namespace-specific View
-- [ ] Kubernetes Events (Perlu tool tambahan, helm repo sempat error 404)
+- [x] Namespace-specific View Dashboard (seperti Kubernetes / Compute Resources / Namespace (Pods))
+- [x] Kubernetes Events (Perlu tool tambahan, helm repo sempat error 404)
 
 ### 3. Application Layer
  
@@ -1110,10 +1152,9 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 
 ### 4. Business Metrics
 
-- [⏳] **Metrics Target**: Tier A/B/C, Confidence, Schema Validation, Escape Hatch, Inference/Retrieval Time, Request Rate, Latency, Error Rate
-> *Status (2026-08-03): sebagian unblocked — gateway metrics (Farrel, §0 item 11) + agent `qti_*` metrics (Johan, §0 item 13) sudah live; dashboard/alert Phase 6/7 siap dibangun. Tier-based Confidence masih menunggu DS agent hooks + spec.*
-- ✅ Metrik qti_llm_tokens_total, qti_agent_parse_errors_total, & qti_agent_ollama_timeouts_total mengalir ke Prometheus & terakses di Grafana Explore.
-- ✅ Business Alerting: PrometheusRule `qti-business-alerts` aktif terintegrasi dengan Telegram alert receiver.
+- [x] **Metrics Target**: Tier A/B/C, Confidence, Schema Validation, Escape Hatch, Inference/Retrieval Time, Request Rate, Latency, Error Rate
+- [x] Metrik qti_llm_tokens_total, qti_agent_parse_errors_total, & qti_agent_ollama_timeouts_total mengalir ke Prometheus & terakses di Grafana Explore.
+- [x] Business Alerting: PrometheusRule `qti-business-alerts` aktif terintegrasi dengan Telegram alert receiver.
 ---
 
 ## BAGIAN 4 — Job Breakdown & Bantuan yang Dibutuhkan
@@ -1284,8 +1325,8 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | Data Engineering `data-pipeline` ingestion (§2.4) | DevOps CI/CD (Ferdi) confirmation | `data-pipeline` runs outside the cluster and can't reach `qdrant.qdrant.svc.cluster.local` — needs a decided external path (Mac Mini, port-forward, or NodePort) — see §2.3.3. | ✅ **Resolved (2026-08-05)** — ingestion via the 3-terminal workaround (§2.3.13, bypasses the `kube-router` ClusterIP bug); `qti_knowledge_base` = **110 points** (24 SOPs). |
 | DS Stage 2 Real-Data Eval (§1.4 / §8) | Data Engineering (Farrel) | Real tickets grounded in wrong SOPs due to coverage gaps; required new `SOP-INF-*` entries and v1.1 metadata parsing. | ✅ **Resolved 2026-08-05** — 24 SOPs ingested with explicit Categories, Tiers, and Tags. `qti_knowledge_base` = **110 points**. DS fully unblocked for Stage 2 re-eval. |
 | `/v1/query` returning real data (§2.4, §1.4) | Data Engineering (Farrel) | `clients::qdrant::search_sop` is written but not wired into the route handler yet, and the collection has 0 points until ingestion runs. | ✅ **Resolved** — wired (commit `10898a1`), deployed (`a0b4bec`), verified returning SOP text (e.g. SOP-GIT-003, SOP-DOC-001). |
-| DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) & Johan (metrics) | "Blocked total" per §4.4, Phase 8. | ✅ **Resolved** — Infra blocker bypassed via Tailscale binding. Johan delivered agent metrics (`qti_*`) on `100.126.65.74:8000/metrics`. |
-| DevOps business-metric dashboards (Phase 6/7) | Farrel (gateway metrics) + Johan (agent metrics & Tier spec) | Gateway-side `qti_*` metrics and agent-side Tier specs needed instrumentation. | ✅ **Resolved** — Farrel delivered gateway metrics. Johan delivered agent hooks (`qti_*`) and official Tier A/B/C specs. Jep is fully unblocked to build dashboards. |
+| DevOps Prometheus/Grafana/Loki Phase 8 (AI pipeline monitoring) | Mac Mini networking resolution (Hilmi + Ferdi) & Johan (metrics) | DONE / LIVE — Blocker jaringan teratasi via Tailscale/WireGuard. Metrik Mac Mini Node Exporter (100.79.30.90:9100) dan Agent Johan (100.126.65.74:8000/metrics) resmi unblocked dan aktif dipantau oleh Prometheus & Loki. | ✅ **Resolved** — Infra blocker bypassed via Tailscale binding. Johan delivered agent metrics (`qti_*`) on `100.126.65.74:8000/metrics`. |
+| DevOps business-metric dashboards (Phase 6/7) | Farrel (gateway metrics) + Johan (agent metrics & Tier spec) | DONE / LIVE — Instrumentasi metrik bisnis qti_* (gateway & agent, termasuk Tier-based Confidence) sudah tuntas 100%, divisualisasikan di Grafana Dashboard, serta terintegrasi ke Telegram Alerting (qti-business-alerts). | ✅ **Resolved** — Farrel delivered gateway metrics. Johan delivered agent hooks (`qti_*`) and official Tier A/B/C specs. Jep is fully unblocked to build dashboards. |
 | Promtail logs for `api-gateway` (namespace `qti`) reaching Loki | RBAC debugging (Jep), explanation from Hilmi | Promtail currently only has RBAC for 4 namespaces (`argocd`, `hite-prod`, `kube-system`, `monitoring`) — `qti` is not among them; per §4.4 this needs Hilmi to explain the current allocation. | ✅ **Resolved** — `qti` namespace logs confirmed in Loki. |
 | Any full-hosting decision (§6) | Ferdi + Hilmi | Needs the XOA hypervisor question answered and a single network path (tunnel vs. Tailscale) chosen. | ⏳ **Open** — XOA question still unanswered; WireGuard tunnel adopted as the LLM path. |
 | `clients/inference.rs` (api-gateway) | Design confirmation from Data Science (Johan) | Possibly unnecessary if the Python agent calls Ollama/Qwen directly — see §2.3.6. | ✅ **Resolved 2026-08-02** — joint DS+DE decision: do NOT build it; gateway retrieval-only, generation in the DS agent (§1.3.5). Dead `INFERENCE_URL` env **removed 2026-08-03** (§0 item 11). |
