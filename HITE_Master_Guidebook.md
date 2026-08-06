@@ -74,7 +74,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 13. **2026-08-03 (DS agent observability delivered; Jep fully unblocked).** `agent.py` now implements `prometheus_client` to expose AI-pipeline metrics on `/metrics` (bound `0.0.0.0`), scrapeable over the Tailscale mesh at Johan's IP `100.126.65.74:8000/metrics`. Five `qti_*` metrics: `qti_llm_request_duration_seconds{phase}`, `qti_llm_tokens_total{type}`, `qti_agent_parse_errors_total`, `qti_agent_ollama_timeouts_total`, `qti_agent_empty_retrieval_total`. Business-metrics spec formalized (Tier A = complete + grounded; Tier B = complete + ungrounded; Tier C = incomplete/escape) and handed to Jep. §1.4 DS TODOs closed; §4.1.4 documents the scrape target; §4.4 Phases 6/7 unblocked, Phase 8 done; §7 rows 4–5 resolved.
 14. **2026-08-04 — Phase 8 (Observability & LLM Integration) 100% completed.** Reconciled live cluster, Mac Mini, and `DEBIAN13` state following end-to-end connectivity verification:
     - **Ollama binding updated.** Mac Mini Ollama reconfigured to bind `0.0.0.0:11434` (`*:11434`), enabling cross-mesh access. Verified via Tailscale from `DEBIAN13` (`http://100.79.30.90:11434/api/tags`).
-    - **`qti-agent` deployment live.** Pod `qti-agent` deployed and running (`1/1 Running` in ns `qti`), HTTP gateway responding on port `8080`.
+    - **`qti-agent` deployment live.** Pod `qti-agent` deployed and running (`1/1 Running` in ns `qti`), HTTP gateway responding on port `8080`. *(Superseded 2026-08-06 — no `qti-agent` deployment exists in the cluster; manifests moved to `k8s/archive/qti-agent/`; see §0 item 19.)*
     - **Agent Johan metrics registered.** Scrape target `100.126.65.74:8000` added to `k8s/prometheus/prometheus-additional.yaml` and committed to repo.
     - **Phase 8 officially closed.** Status raised from ~40% to **100% Done**.
 15. **2026-08-05 — Stage 2 real-data validation begins (manual curation) + reproducibility experiments.**
@@ -102,6 +102,20 @@ Nothing from the original five source files was deleted. Every table, checklist,
     - **Stage 2 KB Expansion:** Ingested 24 SOPs (including `SOP-INF-003..008`). `qti_knowledge_base` now holds exactly **110 points**.
     - **Network routing workaround documented:** Discovered a `kube-router` ClusterIP routing bug on the controller. Implemented a definitive 3-terminal workaround (`kubectl port-forward` -> SSH tunnel -> local `cargo run`).
 18. **2026-08-06 — Methodology finalized; §8 promoted from draft to final.** §8 now carries the full two-stage methodology (system under test, metrics, Stage 1 + Stage 2 results, findings, limitations). Stage 2 real set expanded to 8 tickets (REAL-001..008); SOP expansion SOP-INF-003..008 → RAG_Manual v1.1 (24 SOPs) ingested by Farrel → qti_knowledge_base = 110 points. Real-set grounding 6/8 (75%); post-ingest correct-SOP re-eval pending.
+19. **2026-08-06 — State reconciled against live machine + cluster cleanup.** Every §1–§4 "current state" claim was re-checked against the deployed cluster on 2026-08-06. Corrections below; all cluster-side changes are listed in the same bullet:
+   - **`qti-agent` deployment is NOT running.** §0 item 14 / §4.4 Phase 6+8 / §7 claimed a `qti-agent` Deployment "1/1 Running in ns qti". No such deployment/pod exists in the cluster; the manifests were moved to `k8s/archive/qti-agent/` (commit `5ad3042`, same commit that added the additional scrape targets). The live agent is Johan's laptop process (`uvicorn agent:app` on `100.126.65.74:8000`, §4.1.4), not a cluster pod. §4.4 / §7 rows corrected.
+   - **`hite-ai-pipeline-alerts` PrometheusRule added (was undocumented).** 5 rules live (`HITE_AIOllamaTimeoutHigh`, `HITE_AILLMLatencyHigh`, `HITE_AIParseJSONErrorsHigh`, `HITE_AIRetrievalEmptyHigh`, `HITE_AIAgentDown`); source `k8s/prometheus/hite-ai-pipeline-alerts.yaml`. **Gotcha:** `HITE_AIAgentDown` fires on `up{job="qti-agent"} == 0`, but no live scrape job is named `qti-agent` (actual jobs: `qti-agent-johan` from the additional-scrape config) — the rule can never fire as written. Follow-up TODO: fix the job matcher.
+   - **`hite-infra-alerts` = 14 rules, not 13.** Prose updated (the §4.1.3 table already listed all 14 incl. `HITE_MacMiniDown`).
+   - **Qdrant points 83 → 110** in §1.1 / §1.3.3 / §3.4.1 (was already 110 in §2.1). Verified live: 110 points, 384-dim/Cosine, green.
+   - **api-gateway deployed image `a0b4bec` → `485024c`** (matches `api-gateway/k8s/kustomization.yaml`). The `a0b4bec` references remain only as historical notes.
+   - **`johan-qti-agent` ScrapeConfig CRD added then removed.** It duplicated the `qti-agent-johan` additional-scrape job for the same endpoint (`100.126.65.74:8000`). Follow-up TODO (see §4.1.4): keep only one scrape mechanism. The ScrapeConfig was deleted from the cluster on 2026-08-06; the repo file `k8s/prometheus/johan-agent-scrape.yaml` remains and should be removed or archived.
+   - **`hite-qti-agent-monitor` ServiceMonitor deleted (dead).** It selected `app=qti-agent`, but no Service carries that label (qti-agent archived) — matched nothing. Deleted from cluster 2026-08-06; repo file `k8s/prometheus/qti-agent-monitor.yaml` remains and should be removed or archived.
+   - **Mac Mini scrape target DOWN as of 2026-08-06.** `mac-mini-external` → `100.79.30.90:9100/metrics` health = down; `qti-agent-johan` → `100.126.65.74:8000` is up. §0 item 16's "both targets live" was true on 2026-08-05; the Mac Mini endpoint is currently unreachable — follow-up TODO.
+   - **Orphan `jaeger` ServiceMonitor deleted.** Jaeger was uninstalled (§0 item 7) but a leftover `jaeger` ServiceMonitor (9d) remained in `monitoring`; deleted 2026-08-06.
+   - **Leftover test pods deleted.** `trigger-log-loop` (Running) and `curl-test3` (Completed) in `monitoring` removed 2026-08-06.
+   - **Grafana dashboards 29 → 28** labeled dashboard ConfigMaps (incl. `grafana-dashboard-hite-llm-retrieval`).
+   - **Ollama binding reconciled to `0.0.0.0:11434`** (§0 item 14, 2026-08-04), superseding the `10.10.10.2:11434` text in §1.3.7 / §3.2.2 — noted in both places.
+   - **NFS CSI controller 3/3 → 5/5** ready containers (the deployment's container count grew).
 
 ---
 
@@ -136,7 +150,7 @@ Nothing from the original five source files was deleted. Every table, checklist,
 | `evaluation_results.json` | Generated (real) | Latest committed run (`edb7dff`, HEAD `0cde7e2`): 55/55 valid, 55/55 schema, **52/55 grounded (94.5%)**. Treatment band across runs: 52–53/55 (94.5–96.4%); archived `3a03a55` sample = 53/55. (2026-08-02 baseline: 43.6%.) |
 | evaluation_results_{control2,treatment1_isnotnone,treatment2_errorgate}_0803.json | Archived | Experiment samples (2026-08-03): control band (24–28/55) + falsified `is not None` hypothesis + winning Error-gate treatment. |
 | Rust API ( /v1/query ) | Deployed, live / retrieval-only | NodePort 30082. Returns retrieved SOP text in `remediation_payload.proposed_fix` (no 5W1H). Reached directly over Tailscale for the retrieval diagnostic; reached by the agent's `search_sop` for RAG context. |
-| Qdrant DB ( qti_knowledge_base ) | Deployed, 83 points | 384-dim / Cosine, 18 SOPs chunked. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
+| Qdrant DB ( qti_knowledge_base ) | Deployed, **110 points** | 384-dim / Cosine, **24 SOPs chunked (2026-08-05)**. Internal `http://qdrant.qdrant.svc.cluster.local:6333`; the agent reaches it only via the gateway. |
 | llm-inference/collected_error_logs.json | **New** | Staging record of 14 raw error logs (real debugging) — the provenance for the real tickets |
 | data-pipeline/real_tickets.json | **New** | Stage 2 real-ticket eval set (REAL-001/002/003); flat array, same schema as golden |
 | llm-inference/evaluation_results_real_0804.json | **Archived** | Stage 2 real-ticket run (3/3 grounded, but 2 in wrong SOP) |
@@ -179,7 +193,7 @@ The `grade_result.py` script enforces a hard, exact-match key check for the 5W1H
 
 ##### 1.3.3 Qdrant Database State
 
-The `qti_knowledge_base` collection is initialized with a 384-dim Cosine configuration and its status is Green. **As of 2026-07-31 it holds 83 points** (18 SOPs, chunked) — the Data Engineer has run the document ingestion pipeline, so `clients::qdrant::search_sop` now returns actionable vectors. *(Written when the collection was empty at 0 points.)*
+The `qti_knowledge_base` collection is initialized with a 384-dim Cosine configuration and its status is Green. **As of 2026-08-05 it holds 110 points** (24 SOPs, chunked) — the Data Engineer has run the document ingestion pipeline, so `clients::qdrant::search_sop` now returns actionable vectors. *(First written when the collection was empty at 0 points; interim state 83 points / 18 SOPs as of 2026-07-31.)*
 
 ##### 1.3.4 Version Control Artifacts
 
@@ -201,7 +215,7 @@ Caveat: the grounding check is naive — an escape-hatch string like `"no matchi
 
 ##### 1.3.7 Ollama reachability from a Tailscale laptop — the SSH-tunnel door
 
-Ollama on the Mac Mini binds to the WireGuard interface only (`OLLAMA_HOST=10.10.10.2:11434`, §3.2.2); on the Mac Mini's Tailscale interface nothing listens on 11434. A Windows laptop on Tailscale therefore CANNOT reach Ollama directly — `curl http://100.79.30.90:11434` and worker-1 `http://100.68.225.41:11434` both refuse. The working door is a local-forward through the controller (which is on the WireGuard subnet at 10.10.10.1):
+Ollama on the Mac Mini binds to `0.0.0.0:11434` (`OLLAMA_HOST=0.0.0.0:11434`, updated 2026-08-04, §0 item 14) — reachable over the WireGuard interface at `10.10.10.2:11434` and over Tailscale from the controller. *(Before 2026-08-04 it bound only to the WireGuard interface `10.10.10.2:11434`, §3.2.2; a Windows laptop on Tailscale therefore CANNOT reach Ollama directly — `curl http://100.79.30.90:11434` and worker-1 `http://100.68.225.41:11434` both refused. The working door is still a local-forward through the controller, which is on the WireGuard subnet at 10.10.10.1):*
 
 ```bash
 ssh -L 11434:10.10.10.2:11434 ferdi@100.94.99.125     # leave this session OPEN; it IS the tunnel
@@ -229,7 +243,7 @@ With tool-selection and retrieval healthy (all `search_sop`, 0 empty), the remai
 - [x] Open K0s network route to expose Qdrant (port 6333) to allow Data Engineering SOP ingestion. *(done — ingestion ran via SSH port-forward tunnel; Qdrant intentionally not exposed permanently, see §3.2.3)*
 
 **Data Engineering Unblocks**
-- [x] Ingest the 18 SOPs from the RAG manual, generate embeddings, and populate the empty Qdrant vector database. *(done 2026-07-31 — `qti_knowledge_base` = 83 points, 384-dim/Cosine)*
+- [x] Ingest the 18 SOPs from the RAG manual, generate embeddings, and populate the empty Qdrant vector database. *(done 2026-07-31 — `qti_knowledge_base` = 83 points, 384-dim/Cosine; expanded to **110 points / 24 SOPs** by 2026-08-05, §1.1)*
 - [x] Wire the Rust backend (`/v1/query`) to actively call `clients::qdrant::search_sop` instead of returning the placeholder payload. *(done 2026-07-31 — commit `10898a1`, deployed as `a0b4bec`)*
 - [x] Confirm `clients/inference.rs` is needed — confirmed NOT needed (joint DS+DE decision 2026-08-02); gateway is retrieval-only (§1.3.5 / §2.3.6), file not built.
 
@@ -320,7 +334,7 @@ RAG is split across three owners. This report covers the two Rust crates I own: 
 
 | Component / File | Status | Access / Details |
 |---|---|---|
-| `api-gateway` Deployment (ns `qti`) | 1/1 Running, Healthy | NodePort **30082**. Image rebuilt 2026-08-03 (adds `qti_*` metrics; SHA per Actions tab). `envFrom: secretRef: api-gateway-secrets` mounted; dead `INFERENCE_URL` env removed. |
+| `api-gateway` Deployment (ns `qti`) | 1/1 Running, Healthy | NodePort **30082**. Image rebuilt 2026-08-03 (adds `qti_*` metrics) and again for the `http_requests_total` middleware — **currently deployed `ghcr.io/merpatidove/qti-api-gateway:485024c`** (tag auto-managed by CI in `kustomization.yaml`). `envFrom: secretRef: api-gateway-secrets` mounted; dead `INFERENCE_URL` env removed. |
 | `api-gateway/src/main.rs` | Working, deployed | Orchestrator; wires router; exposes `/metrics`; binds `0.0.0.0:8080`. **`http_requests_total` wired via a `count_requests` middleware (2026-08-05)**. |
 | `api_contract.md` | **v2.0 (2026-08-05)** | Retrieval-only contract. Gateway returns `{ticket_metadata, remediation_payload}` only. |
 | `api-gateway/src/models.rs` | Working, deployed | `QueryRequest`, `QueryResponse`, `TicketMetadata`, `RemediationPayload` (serde; matches `api_contract.md`). |
@@ -445,7 +459,7 @@ To ingest data locally, you must bypass the broken cluster network using a 3-ter
 **My lane — shipped**
 - [x] Modularize `api-gateway`; `/v1/health` live; `/v1/query` returns real data; `clients/qdrant.rs::search_sop` wired; root `.gitignore`; `rag-service/` removed.
 - [x] `data-pipeline` parser isolates all 18 SOPs; `qti_knowledge_base` created at 384/Cosine.
-- [x] Reachable Qdrant path for `data-pipeline` (SSH port-forward); collection populated (83 points).
+- [x] Reachable Qdrant path for `data-pipeline` (SSH port-forward); collection populated (83 points, later **110 points / 24 SOPs**, §1.1).
 - [x] Wire `/v1/query` → `search_sop` (commit `10898a1`, deployed `a0b4bec`).
 - [x] Confirm `clients/inference.rs` NOT needed (retrieval-only, §1.3.5); file not built.
 - [x] Move hardcoded `QDRANT_URL` to env-read in `clients/qdrant.rs` (falls back to in-cluster DNS).
@@ -539,7 +553,7 @@ kubectl -n argocd patch application qti-api-gateway -p '{"metadata":{"annotation
 | **Argo CD** | 7/7 pods Running | `https://argocd.hite.local` (admin / `12qwaszx`) |
 | **Qdrant** | 1/1 Running | `qdrant.qdrant.svc.cluster.local:6333`, NFS-backed PVC (10Gi) |
 | **api-gateway** | 1/1 Running, Healthy | NodePort **30082** — `http://100.106.122.68:30082/v1/health` returns `{"status":"ok"}`; `POST /v1/query` returns real SOP data. (Was ClusterIP `api-gateway.qti.svc:8080`.) |
-| **NFS CSI driver** | 3/3 controller, 2/2 node pods | k0s path: `/var/lib/k0s/kubelet` |
+| **NFS CSI driver** | 5/5 controller, 2/2 node pods | k0s path: `/var/lib/k0s/kubelet` |
 | **Ingress-NGINX** | 1/1 Running (LoadBalancer) | NodePort 31084 (HTTP), 30616 (HTTPS) — routes to Grafana, Prometheus, AlertManager, ArgoCD. *(Grafana/Prometheus/AlertManager themselves are Jep's — see §4.)* |
 | **Local Registry** | Running on controller (HTTPS, self-signed cert) | `10.20.20.201:5000` — stores all deployment images |
 | **hite-prod Registry** | 1/1 Running (Deployment) | `private-registry-svc.hite-prod:5000` (NodePort 32000) — Kubernetes-native registry:2 |
@@ -564,7 +578,7 @@ Push to main (api-gateway/**)
 - **Known failure (2026-07-31):** CI run #7 built the image and passed smoke for commit `10898a1` but **never deployed** — the commit-back push failed because `main` had moved mid-run, so Argo CD stayed on old tag `1f34091`. Fixed with `git pull --rebase` before the tag commit-back. Runs #8/#9 green.
 - **Manual trigger:** `workflow_dispatch` added 2026-07-31 (was push-only).
 
-**Last successful run:** Image `ghcr.io/merpatidove/qti-api-gateway:a0b4bec` (bakes `all-MiniLM-L6-v2` under `/opt/fastembed`), deployed 2026-07-31; health check passing at NodePort 30082.
+**Last successful run:** Image `ghcr.io/merpatidove/qti-api-gateway:a0b4bec` (bakes `all-MiniLM-L6-v2` under `/opt/fastembed`), deployed 2026-07-31; health check passing at NodePort 30082. *(Deployed tag has since moved forward with each CI run — current tag `485024c`, §2.1; `a0b4bec` is the historical embedding-model milestone.)*
 
 ##### 3.1.2 Files Created in QTI-MAGANG Repo
 
@@ -691,7 +705,7 @@ PersistentKeepalive = 25
 | Config path | `/opt/homebrew/etc/wireguard/wg0.conf` |
 | Private key | `/opt/homebrew/etc/wireguard/mm-vm-private.key` |
 | Public key | `W/ZjEHMjrkDq+rv3QJxZieL7MZlz6guijDN0i+RSmwA=` |
-| Ollama binding | `10.10.10.2:11434` (`OLLAMA_HOST=10.10.10.2:11434`) |
+| Ollama binding | `0.0.0.0:11434` (`OLLAMA_HOST=0.0.0.0:11434`; reachable on the WireGuard iface at `10.10.10.2:11434`. Updated 2026-08-04 — was `10.10.10.2:11434` only) |
 | Auto-start | LaunchDaemon `/Library/LaunchDaemons/com.wireguard.wg0.plist` |
 | Latency (VM↔Mac Mini) | 26-30ms, 0% loss |
 | Mac Mini hostname | `Qtis-Mac-mini.local` (mDNS), Tailscale IP `100.79.30.90` |
@@ -717,7 +731,7 @@ sudo wg show wg0 | grep handshake
 **Important notes:**
 - **Tailscale must be up first** on both sides — the Mac Mini's `Endpoint` is a Tailscale IP (`100.94.99.125`), so it won't resolve if Tailscale is down.
 - **Fresh key required** — the Mac Mini's Wireguard key must be generated with `wg genkey`; do not reuse the key from any existing macOS Wireguard tunnel (`mac-mini-ops` or similar).
-- **Ollama binding** — use `OLLAMA_HOST=10.10.10.2:11434` (binds directly to the WireGuard interface; `0.0.0.0` on macOS binds to IPv6 `[::]` which may not accept IPv4 connections from the tunnel).
+- **Ollama binding** — *original guidance* was `OLLAMA_HOST=10.10.10.2:11434` (bind directly to the WireGuard interface; `0.0.0.0` on macOS binds to IPv6 `[::]` which may not accept IPv4 connections from the tunnel). **Rebound 2026-08-04 to `0.0.0.0:11434`** (§0 item 14) and verified reachable over WireGuard at `10.10.10.2:11434` and over Tailscale — see §3.2.2 table row / §1.3.7.
 - **macOS auto-start** — LaunchDaemon installed at `/Library/LaunchDaemons/com.wireguard.wg0.plist` with `KeepAlive`. Load with: `sudo launchctl load /Library/LaunchDaemons/com.wireguard.wg0.plist`.
 - **`wg-quick` on macOS** searches configs in order: `/etc/wireguard/`, `/usr/local/etc/wireguard/`, `/opt/homebrew/etc/wireguard/`. The config lives under the Homebrew prefix since that directory is user-writable.
 - **Pre-existing tunnel** — the Mac Mini also has a separate WireGuard tunnel **"mac-mini-ops"** (utun4, IP `10.7.0.63`, endpoint `117.54.250.111:51820`) managed by the macOS WireGuard app — connects to the ops infrastructure controller at `10.20.20.201`. Recovery script at `~/wg-recover.sh`. Do not confuse or reuse keys between tunnels.
@@ -806,14 +820,14 @@ The Argo CD repo-server (`10.109.94.133:8081`) was intermittently unreachable fr
 
 ##### 3.4.1 For the Dev Teams (Unblocks Real Functionality)
 
-- [x] **api-gateway skeleton** — `/v1/health`, `/v1/query`, `/metrics` endpoints implemented. Query returned placeholder initially; **returns real retrieved SOP text since 2026-07-31** (commit `10898a1`, deployed `a0b4bec`).
+- [x] **api-gateway skeleton** — `/v1/health`, `/v1/query`, `/metrics` endpoints implemented. Query returned placeholder initially; **returns real retrieved SOP text since 2026-07-31** (commit `10898a1`, deployed `a0b4bec`; current deployed tag `485024c`).
 - [x] **rag-service scaffold** — `POST /api/v1/ticket` accepts JSON, returns dummy response. No Qdrant/Mistral integration.
 - [x] **Write actual Rust source code** — *(per Data Engineering §2.3.5 above)*: `models.rs`, `routes/query.rs`, `clients/qdrant.rs` are **written, wired, and deployed** (2026-07-31). Only `clients/inference.rs` remains, and may be unnecessary — see §2.3.6.
   - `routes/query.rs` — POST /v1/query handler, Qdrant query, inference forward
   - `clients/qdrant.rs` — Qdrant HTTP client
   - `clients/inference.rs` — Mac Mini inference client
   - `models.rs` — matching `api_contract.md`
-- [x] **Create `qti_knowledge_base` collection** in Qdrant — **done** (size 384, Cosine; now holds **83 points** after 2026-07-31 ingestion). The curl below is historical (note the size is already corrected to 384):
+- [x] **Create `qti_knowledge_base` collection** in Qdrant — **done** (size 384, Cosine; now holds **110 points** after 2026-08-05 ingestion of RAG Manual v1.1's 24 SOPs). The curl below is historical (note the size is already corrected to 384):
   ```bash
   kubectl port-forward -n qdrant svc/qdrant 6333:6333
   curl -X PUT http://localhost:6333/collections/qti_knowledge_base \
@@ -905,7 +919,7 @@ The private keys are also stored in GitHub Secrets (`DEPLOY_KEY` for QTI-MAGANG)
 
 | Component | Status | Access |
 |---|---|---|
-| **Prometheus/Grafana** | All targets up, 29 dashboards | `http://<node-ip>:30000` (admin / `8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx`) |
+| **Prometheus/Grafana** | All targets up, **28 dashboards** | `http://<node-ip>:30000` (admin / `8fOwy3G9NWqtWqBfqvXZS5PijKGeADBVmuNQv2fx`) |
 | **Loki** | 1/1 Running (StatefulSet) | `loki.monitoring.svc:3100` — log aggregation backend |
 | **Promtail** | 2/2 Running (DaemonSet, both nodes) | Ship logs from all nodes to Loki |
 | **AlertManager** | 2/2 Running (StatefulSet) | `prometheus-kube-prometheus-alertmanager.monitoring:9093` — Telegram notifications active |
@@ -962,7 +976,7 @@ AlertManager is deployed as a StatefulSet in `monitoring` namespace, pulling its
 
 **Routing:** 30s group_wait, 5m group_interval, 3h repeat_interval. `Watchdog` alert suppressed (sent to null receiver).
 
-**Custom PrometheusRule `hite-infra-alerts`** (created 2026-07-22; **13 rules** as of 2026-07-31 — source of truth: `k8s/prometheus/hite-infra-alerts.yaml`):
+**Custom PrometheusRule `hite-infra-alerts`** (created 2026-07-22; **14 rules** — source of truth: `k8s/prometheus/hite-infra-alerts.yaml`):
 
 | Alert | Severity | Trigger |
 |---|---|---|
@@ -979,9 +993,26 @@ AlertManager is deployed as a StatefulSet in `monitoring` namespace, pulling its
 | `HITE_ContainerCPUThrottled` | warning | > 50% of CFS periods throttled for 5m |
 | `HITE_DeploymentReplicasMismatch` | warning | spec replicas ≠ status replicas for 5m |
 | `HITE_ApiGatewayDown` | critical | api-gateway (`job="api-gateway"`) unreachable 2m |
-| `HITE_MacMiniDown` | critical | macmini (AI Inference Server) unreachable 2m |
+| `HITE_MacMiniDown` | critical | macmini (AI Inference Server, `job="mac-mini-external"`) unreachable 2m |
+
+**Business rule `qti-business-alerts`** (source of truth: `k8s/prometheus/qti-business-alerts.yaml`):
+
+| Alert | Severity | Trigger |
+|---|---|---|
 | `QTI_OllamaTimeoutSpike` | critical | rate(qti_agent_ollama_timeouts_total[5m]) > 0 |
 | `QTI_AgentParseErrorHigh` | Warning | rate(qti_agent_parse_errors_total[5m]) > 0.05 |
+
+**AI-pipeline rule `hite-ai-pipeline-alerts`** (added 2026-08-04; source of truth: `k8s/prometheus/hite-ai-pipeline-alerts.yaml`):
+
+| Alert | Severity | Trigger |
+|---|---|---|
+| `HITE_AIOllamaTimeoutHigh` | critical | rate(qti_agent_ollama_timeouts_total[5m]) > 0.02 for 2m |
+| `HITE_AILLMLatencyHigh` | warning | LLM p95 latency > 30s for 3m |
+| `HITE_AIParseJSONErrorsHigh` | critical | rate(qti_agent_parse_errors_total[5m]) > 0.05 for 2m |
+| `HITE_AIRetrievalEmptyHigh` | warning | rate(qti_agent_empty_retrieval_total[5m]) > 0.1 for 5m |
+| `HITE_AIAgentDown` | critical | `up{job="qti-agent"} == 0` for 1m |
+
+> **Gotcha (2026-08-06):** `HITE_AIAgentDown` fires on `up{job="qti-agent"} == 0`, but no live scrape job carries that label — the agent is scraped as `qti-agent-johan` (additional-scrape config, §4.1.4). As written the rule can never fire; fix the job matcher (see §4.2 follow-up). The `QTI_*` business alerts overlap the `HITE_AI*` pipeline alerts (both fire on `qti_agent_*` metrics) — intentional, different severities/thresholds.
 
 Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5 menit").
 
@@ -992,6 +1023,8 @@ Alert annotations are in Indonesian (e.g., "CPU node tinggi di atas 90% selama 5
 The Data Science Python agent (`agent.py`) now exposes business and AI health metrics to unblock Phase 6, 7, and 8.
 
 - **Scrape Target:** `http://100.126.65.74:8000/metrics` (Johan's Tailscale IP, agent bound to `0.0.0.0`).
+- **Scrape mechanism:** the `qti-agent-johan` job in the `prometheus-additional-configs` secret (k8s/prometheus/prometheus-additional.yaml), `metrics_path: /metrics`, scraped every 15s. *(A `johan-qti-agent` ScrapeConfig CRD that duplicated this target was deleted 2026-08-06 — follow-up: remove the leftover repo file `k8s/prometheus/johan-agent-scrape.yaml`.)*
+- **Mac Mini node-exporter:** `mac-mini-external` → `http://100.79.30.90:9100/metrics` (`k8s/prometheus/prometheus-additional.yaml`). **DOWN as of 2026-08-06** (host unreachable from Prometheus) — was verified live 2026-08-05 (§0 item 16). Follow-up: confirm Mac Mini / node-exporter is up, or this target will keep failing `HITE_MacMiniDown`.
 - **Exported Metrics (`qti_*`):**
   - `qti_llm_request_duration_seconds` (Histogram): LLM latency by `phase={analysis,synthesis}`.
   - `qti_llm_tokens_total` (Counter): Token usage by `type={prompt,completion}`.
@@ -1003,13 +1036,19 @@ The Data Science Python agent (`agent.py`) now exposes business and AI health me
 
 - [x] **ServiceMonitor for api-gateway** — done. Prometheus scrapes `/metrics` every 15s via `servicemonitor.yaml`.
 - [x] **ServiceMonitor for Qdrant** — done. `qdrant-monitor` deployed in `qdrant` namespace, scrapes `/metrics` every 30s.
-- [x] **AlertManager** — deployed with Telegram notifications (2 receivers). Custom alerts in `hite-infra-alerts` PrometheusRule. See §4.1.3.
+- [x] **AlertManager** — deployed with Telegram notifications (2 receivers). Custom alerts in `hite-infra-alerts` (14), `qti-business-alerts` (2), and `hite-ai-pipeline-alerts` (5) PrometheusRules. See §4.1.3.
 - [x] **Centralized logging (Loki + Promtail)** — done. Logs ship from both nodes to Loki. Loki data source already provisioned in Grafana via ConfigMap.
 - [x] **Loki in Argo CD** — Application created (`k8s/loki/application.yaml`). Synced/Healthy. Old Helm release uninstalled.
 - [x] **Grafana Loki data source** — provisioned via `loki-loki-stack` ConfigMap. Alertmanager data source also configured.
 - [x] **Expose LLM token throughput, Qdrant latency, and JSON decode error metrics** to Prometheus/Grafana once the pipeline goes live (see Data Scientist §1.4).
 - [x] (DS-side, proposed) Error→eval feedback loop: a curator pulls error-shaped tickets from Loki into `golden_datasets.json` so the 5W1H baseline is graded on production shapes. The error LOG is already in Loki (§4.1.1); the Telegram message is only the alert derived from it — never parse Telegram back into a store. Raw errors must NOT be auto-embedded into Qdrant (human-gated SOP authoring via §2.4 only). Status: PROPOSED, not built.
 - [x] (DS-side) Agent error counters (JSON-decode / Ollama-timeout / empty-retrieval) are DS-owned and ride with the agent observability hooks (§1.4); the gateway-side `qti_*` business counters remain Farrel's (§4.4). Note for Phase 8: the Mac Mini *network* blocker is gone (WireGuard §3.2.2 + DS SSH tunnel §1.3.7); the only thing left blocking AI-pipeline monitoring is the metrics themselves (Farrel's `qti_*` + DS hooks). *(2026-08-03: agent error counters now live — `qti_agent_parse_errors_total` / `qti_agent_ollama_timeouts_total` / `qti_agent_empty_retrieval_total` on `100.126.65.74:8000/metrics`, §4.1.4; the metrics blocker is gone.)*
+
+**Follow-ups opened 2026-08-06 (from the state reconciliation):**
+- [ ] Fix `HITE_AIAgentDown` job matcher — `up{job="qti-agent"}` matches no live job (agent scraped as `qti-agent-johan`); change the expr so the alert can fire (§4.1.3).
+- [ ] Confirm Mac Mini node-exporter — `mac-mini-external` target is DOWN; bring the host/endpoint back up (§4.1.4).
+- [ ] Consolidate agent scrape mechanisms — delete the leftover repo file `k8s/prometheus/johan-agent-scrape.yaml` and `k8s/prometheus/qti-agent-monitor.yaml` (both replaced by `prometheus-additional.yaml`; cluster-side resources already removed).
+- [ ] Consider overlapping `QTI_*` (qti-business-alerts) vs `HITE_AI*` (hite-ai-pipeline-alerts) rules — both alert on the same `qti_agent_*` metrics; confirm the threshold/severity split is intended (§4.1.3).
 
 ### 4.3 Quick Reference (Observability)
 
@@ -1054,8 +1093,12 @@ kubectl get pods -n monitoring -l app.kubernetes.io/name=promtail
 kubectl get servicemonitor -A
 
 # Verify custom scrapers config (Mac Mini Node Exporter & Johan Agent Metrics)
-kubectl get secret -n monitoring prometheus-kube-prometheus-prometheus \
-  -o jsonpath='{.data.prometheus\.yaml\.gz}' | base64 -d | gzip -d | grep -A 10 "additionalScrapeConfigs"
+kubectl get secret -n monitoring prometheus-additional-configs \
+  -o jsonpath='{.data.prometheus-additional\.yaml}' | base64 -d
+
+# Check live scrape targets / health (mac-mini-external, qti-agent-johan, api-gateway, qdrant)
+kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090 &
+curl -s 'http://localhost:9090/api/v1/targets?state=active' | jq '.data.activeTargets[] | {job: .labels.job, health}'
 
 
 # ==============================================================================
@@ -1068,9 +1111,9 @@ kubectl get pods -n monitoring -l app.kubernetes.io/name=alertmanager
 kubectl get secret -n monitoring alertmanager-prometheus-kube-prometheus-alertmanager \
   -o jsonpath='{.data.alertmanager\.yaml}' | base64 -d
 
-# Verify loaded Prometheus Rules (Infra & Business Alerts)
+# Verify loaded Prometheus Rules (Infra & Business & AI-pipeline Alerts)
 kubectl get prometheusrule -n monitoring
-kubectl get prometheusrule hite-infra-alerts qti-business-alerts -n monitoring -o yaml
+kubectl get prometheusrule hite-infra-alerts qti-business-alerts hite-ai-pipeline-alerts -n monitoring -o yaml
 
 
 # ==============================================================================
@@ -1117,8 +1160,8 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
 | **Phase 2** | Instalasi Stack Inti | ✅ | Prometheus, Grafana, Loki + Promtail, Alertmanager running. *Jaeger telah dihapus (removed).* |
 | **Phase 3** | Konfigurasi Production | ✅ | Datasource & Ingress siap, Contact Point Telegram aktif. *Retention Loki sudah diatur menjadi 720 jam = 30 hari*. |
 | **Phase 4** | Dashboard | ✅ | Dashboard Node Exporter, K8s, & AI Pipeline Section 2 terisi data metrik qti_* secara real-time. |
-| **Phase 5** | Alert Rules | ✅ | 14 alert infra + 2 business alert (QTI_OllamaTimeoutSpike & QTI_AgentParseErrorHigh) aktif & berstatus Normal di Grafana. |
-| **Phase 6** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100)Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs)Pod qti-agent: ✅ Selesai (1/1 Running, image-pull fixed, port 8080 up)* |
+| **Phase 5** | Alert Rules | ✅ | 14 alert infra + 2 business alert (QTI_OllamaTimeoutSpike & QTI_AgentParseErrorHigh) + 5 AI-pipeline alert (`hite-ai-pipeline-alerts`, §4.1.3) aktif & berstatus Normal di Grafana. |
+| **Phase 6** | Monitoring AI Pipeline | ✅ | *Selesai (2026-08-03)*. Checklist Application Layer:Mac Mini node-exporter: ✅ Selesai (100.79.30.90:9100) Ollama Remote Reachability: ✅ Selesai (Bound 0.0.0.0:11434, verified curl dari DEBIAN13) Metric Agent Johan: ✅ Selesai (Didaftarkan via additionalScrapeConfigs) Pod qti-agent: ~~1/1 Running, image-pull fixed, port 8080 up~~ — **tidak ada deployment `qti-agent` di cluster; manifes dipindah ke `k8s/archive/qti-agent/` (2026-08-06). Agent berjalan di laptop Johan (`100.126.65.74:8000`), bukan sebagai pod.** |
 | **Phase 7** | Testing | ✅ | Testing infra E2E selesai. *Testing log E2E selesai. Log api-gateway (namespace qti) berhasil masuk ke Loki.*. |
 | **Phase 8** | Production Checklist | ✅ | Audit infrastruktur, PVC storage, Pod health, GitOps sync, dan penyesuaian Contact Point Telegram Raw JSON. Stack observability Production-Ready.. |
 | **Phase 9** | Troubleshooting | ⏳ | Berjalan reaktif, akan didokumentasikan di akhir. |
@@ -1149,7 +1192,7 @@ Sistem **AI Ticket Triage**, *fully on-premise*, tanpa data keluar ke internet.
       - Mac Mini Node Exporter: Scraped via prometheus-additional.yaml (100.79.30.90:9100) ✅
       - Ollama Remote Reachability: Bound 0.0.0.0:11434, verified via Tailscale ✅
       - Agent Johan Metrics: Scraped via prometheus-additional.yaml (100.126.65.74:8000/metrics) ✅
-      - Pod qti-agent Deployment: Status 1/1 Running in ns qti, port 8080 up ✅
+      - Pod qti-agent Deployment: ~~1/1 Running in ns qti, port 8080 up~~ — **tidak ada pod/deployment seperti itu di cluster; manifes diarsipkan ke `k8s/archive/qti-agent/` (2026-08-06). Agent = proses laptop Johan (`100.126.65.74:8000`).**
 
 ### 4. Business Metrics
 
@@ -1334,7 +1377,7 @@ Given the above, before writing a full-hosting migration plan it's worth getting
 | DS grounding rate / retrieval→synthesis join | Data Science (Johan) | Synthesis-gate "Error"-substring veto was the root cause (§1.4 / §1.6). | ✅ Resolved 2026-08-03 — grounding raised from the 43.6–50.9% control band to a 94.5–96.4% treatment band (≈95%) via the `_is_err` synthesis-gate fix; verified genuine. |
 | **Ollama Remote Binding** | Jep / DevOps | Mac Mini (`100.79.30.90`) | ✅ **Resolved** | Rebound to `0.0.0.0:11434`; verified via `curl /api/tags`. |
 | **Scrape Target Agent Johan** | Jep / DevOps | Johan / Data Science | ✅ **Resolved** | Added `100.126.65.74:8000` to `prometheus-additional.yaml`. |
-| **`qti-agent` Deployment** | Ferdi / DevOps | K8s Cluster (ns `qti`) | ✅ **Resolved** | Pod running 1/1, HTTP server listening on `:8080`. |
+| **`qti-agent` Deployment** | Ferdi / DevOps | K8s Cluster (ns `qti`) | ⏳ **Corrected 2026-08-06** | **No such deployment exists** — manifests archived to `k8s/archive/qti-agent/`; the agent is Johan's laptop process on `100.126.65.74:8000`, not a cluster pod. |
 ---
 
 ## §8. Data Science Methodology — 5W1H Triage Evaluation (FINAL)
